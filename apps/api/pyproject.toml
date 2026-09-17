@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stockx-api"
+version = "0.1.0"
+description = "FastAPI backend database foundation for the StockX-style marketplace"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.13",
+  "fastapi>=0.115",
+  "psycopg[binary]>=3.2",
+  "pydantic-settings>=2.4",
+  "sqlalchemy>=2.0",
+  "uvicorn[standard]>=0.30"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["alembic*", "tests*"]

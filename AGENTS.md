@@ -86,6 +86,7 @@ watchlist
 - Keep migrations reviewable and deterministic.
 - Seed representative categories and products from the current static storefront.
 - Store refresh token records server-side in a revocable/rotatable form.
+- Store admin access with `users.is_admin BOOLEAN NOT NULL DEFAULT FALSE`; do not introduce a text user role/access-level column for the initial foundation.
 
 Initial entities:
 
@@ -120,6 +121,19 @@ When implementation exists, prefer these checks before handing work back:
 - Marketplace smoke test: browse categories, search, open product detail, access protected account/sell route.
 
 If a command cannot be run because tooling is not installed yet, state that clearly in the final response.
+
+Database foundation commands:
+
+```text
+docker compose -f infra/docker/docker-compose.yml --env-file apps/api/.env.example up -d postgres
+cd apps/api
+pip install -e ".[dev]"
+pytest
+alembic upgrade head
+python -m app.db.seed
+python -m app.db.seed
+alembic downgrade base
+```
 
 ## OpenSpec Workflow
 

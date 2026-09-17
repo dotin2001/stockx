@@ -27,6 +27,7 @@ The foundation should support:
 - Authenticated sell/listing entry flow.
 - Authenticated watchlist foundation.
 - Seeded development catalog based on representative products from the current static pages.
+- Simple admin authorization marker stored as `users.is_admin`.
 
 Out of scope for the first foundation:
 
@@ -152,11 +153,32 @@ Important rules:
 
 - Users have unique email addresses.
 - Passwords are stored only as hashes.
+- Admin access is stored as `is_admin BOOLEAN NOT NULL DEFAULT FALSE`, not as a text role/access-level column.
 - Refresh tokens are stored in revocable/rotatable form.
 - Categories contain products.
 - Products may have variants.
 - Authenticated users may create initial listings.
 - Users may watch products.
+
+Current database foundation files:
+
+```text
+apps/api/app/models/
+apps/api/alembic/
+apps/api/app/db/seed.py
+infra/docker/docker-compose.yml
+docs/database.md
+```
+
+Foundation commands:
+
+```text
+docker compose -f infra/docker/docker-compose.yml --env-file apps/api/.env.example up -d postgres
+cd apps/api
+alembic upgrade head
+python -m app.db.seed
+alembic downgrade base
+```
 
 ## Auth Plan
 
