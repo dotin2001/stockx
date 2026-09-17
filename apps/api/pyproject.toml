@@ -9,15 +9,21 @@ description = "FastAPI backend database foundation for the StockX-style marketpl
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.13",
+  "argon2-cffi>=23.1",
   "fastapi>=0.115",
+  "PyJWT>=2.8",
   "psycopg[binary]>=3.2",
   "pydantic-settings>=2.4",
   "sqlalchemy>=2.0",
   "uvicorn[standard]>=0.30"
 ]
 
+[project.scripts]
+stockx-api-smoke = "app.smoke:main"
+
 [project.optional-dependencies]
 dev = [
+  "httpx>=0.27",
   "pytest>=8.0"
 ]
 
