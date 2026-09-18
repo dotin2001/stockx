@@ -31,15 +31,21 @@ def test_health_and_versioned_catalog_route(client: TestClient) -> None:
 
 
 def test_settings_parse_environment_values(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://api:api@localhost:5433/api")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("ACCESS_TOKEN_EXPIRE_MINUTES", "5")
     monkeypatch.setenv("REFRESH_TOKEN_EXPIRE_DAYS", "9")
     monkeypatch.setenv("REFRESH_COOKIE_NAME", "refresh_test")
     monkeypatch.setenv("REFRESH_COOKIE_SECURE", "true")
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001")
+    monkeypatch.setenv("POSTGRES_USER", "stockx")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "stockx")
+    monkeypatch.setenv("POSTGRES_DB", "stockx")
+    monkeypatch.setenv("POSTGRES_PORT", "5432")
 
     settings = Settings()
 
+    assert settings.database_url == "postgresql+psycopg://api:api@localhost:5433/api"
     assert settings.secret_key == "test-secret"
     assert settings.access_token_expire_minutes == 5
     assert settings.refresh_token_expire_days == 9

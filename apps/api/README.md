@@ -31,6 +31,10 @@ REFRESH_COOKIE_SAMESITE=lax
 CORS_ORIGINS=http://localhost:3000
 ```
 
+`DATABASE_URL` is consumed by the FastAPI app, Alembic, and seed command. The
+`POSTGRES_*` variables in `.env.example` are for Docker Compose's PostgreSQL
+container and are intentionally ignored by the API settings loader.
+
 ## Migrations
 
 ```bash
