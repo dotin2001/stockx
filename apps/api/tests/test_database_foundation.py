@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Float, Integer
+from sqlalchemy import Boolean, DateTime, Float, Integer
 
 from app.db.base import Base
 from app.db.seed import CATEGORIES, PRODUCTS
@@ -13,6 +13,7 @@ def test_foundation_tables_are_declared() -> None:
         "product_variants",
         "listings",
         "watchlist_items",
+        "cart_items",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -38,6 +39,38 @@ def test_money_columns_use_integer_cents() -> None:
             assert not isinstance(column.type, Float)
 
 
+def test_products_have_archive_metadata() -> None:
+    products = Base.metadata.tables["products"]
+
+    assert "archived_at" in products.c
+    assert "archived_by_user_id" in products.c
+    assert isinstance(products.c.archived_at.type, DateTime)
+    assert products.c.archived_at.nullable is True
+    assert products.c.archived_by_user_id.nullable is True
+
+
+def test_cart_items_are_user_listing_scoped_with_positive_quantity() -> None:
+    cart_items = Base.metadata.tables["cart_items"]
+
+    assert {"user_id", "listing_id", "quantity"}.issubset(cart_items.c.keys())
+    assert isinstance(cart_items.c.quantity.type, Integer)
+    assert cart_items.c.quantity.nullable is False
+
+    unique_constraints = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in cart_items.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert ("user_id", "listing_id") in unique_constraints
+
+    check_constraints = {
+        str(constraint.sqltext)
+        for constraint in cart_items.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert "quantity > 0" in check_constraints
+
+
 def test_seed_data_has_stable_unique_slugs() -> None:
     category_slugs = [category.slug for category in CATEGORIES]
     product_slugs = [product.slug for product in PRODUCTS]
@@ -46,4 +79,3 @@ def test_seed_data_has_stable_unique_slugs() -> None:
     assert len(category_slugs) == len(set(category_slugs))
     assert len(product_slugs) == len(set(product_slugs))
     assert all(product.lowest_ask_cents is None or product.lowest_ask_cents >= 0 for product in PRODUCTS)
-

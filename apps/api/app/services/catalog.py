@@ -11,8 +11,9 @@ def list_categories(db: Session) -> list[Category]:
 
 
 def list_products(db: Session, *, limit: int, offset: int) -> tuple[list[Product], int]:
-    base = select(Product).options(selectinload(Product.category)).order_by(Product.created_at.desc(), Product.name)
-    total = db.scalar(select(func.count()).select_from(Product)) or 0
+    active = Product.archived_at.is_(None)
+    base = select(Product).where(active).options(selectinload(Product.category)).order_by(Product.created_at.desc(), Product.name)
+    total = db.scalar(select(func.count()).select_from(Product).where(active)) or 0
     products = list(db.scalars(base.limit(limit).offset(offset)).all())
     return products, total
 
@@ -28,19 +29,22 @@ def list_products_for_category(db: Session, *, slug: str, limit: int, offset: in
 
     query = (
         select(Product)
-        .where(Product.category_id == category.id)
+        .where(Product.category_id == category.id, Product.archived_at.is_(None))
         .options(selectinload(Product.category))
         .order_by(Product.created_at.desc(), Product.name)
     )
-    total = db.scalar(select(func.count()).select_from(Product).where(Product.category_id == category.id)) or 0
+    total = db.scalar(
+        select(func.count()).select_from(Product).where(Product.category_id == category.id, Product.archived_at.is_(None))
+    ) or 0
     return category, list(db.scalars(query.limit(limit).offset(offset)).all()), total
 
 
 def get_product_by_slug(db: Session, slug: str) -> Product | None:
     return db.scalar(
         select(Product)
-        .where(Product.slug == slug)
+        .where(Product.slug == slug, Product.archived_at.is_(None))
         .options(selectinload(Product.category), selectinload(Product.variants))
+        .execution_options(populate_existing=True)
     )
 
 
@@ -52,7 +56,7 @@ def search_products(db: Session, *, query: str, limit: int, offset: int) -> tupl
         Product.brand.ilike(pattern),
         Product.description.ilike(pattern),
     )
-    base = select(Product).where(criteria).options(selectinload(Product.category)).order_by(Product.name)
-    total = db.scalar(select(func.count()).select_from(Product).where(criteria)) or 0
+    active_criteria = (criteria, Product.archived_at.is_(None))
+    base = select(Product).where(*active_criteria).options(selectinload(Product.category)).order_by(Product.name)
+    total = db.scalar(select(func.count()).select_from(Product).where(*active_criteria)) or 0
     return list(db.scalars(base.limit(limit).offset(offset)).all()), total
-

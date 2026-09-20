@@ -1,0 +1,99 @@
+from uuid import UUID
+
+from fastapi import APIRouter, Query, status
+
+from app.api.deps import CurrentAdminUser, DbSession
+from app.schemas.product import (
+    AdminProductPage,
+    AdminProductRead,
+    ProductCreate,
+    ProductUpdate,
+    ProductVariantCreate,
+    ProductVariantRead,
+    ProductVariantUpdate,
+)
+from app.services import admin_products
+
+router = APIRouter()
+
+
+@router.get("/products", response_model=AdminProductPage)
+def list_products(
+    db: DbSession,
+    _admin: CurrentAdminUser,
+    archived: bool | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> AdminProductPage:
+    products, total = admin_products.list_managed_products(db, archived=archived, limit=limit, offset=offset)
+    return AdminProductPage(
+        items=[AdminProductRead.model_validate(product) for product in products],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/products", response_model=AdminProductRead, status_code=status.HTTP_201_CREATED)
+def create_product(payload: ProductCreate, db: DbSession, _admin: CurrentAdminUser) -> AdminProductRead:
+    product = admin_products.create_product(db, payload)
+    db.commit()
+    return AdminProductRead.model_validate(product)
+
+
+@router.patch("/products/{product_id}", response_model=AdminProductRead)
+def update_product(
+    product_id: UUID,
+    payload: ProductUpdate,
+    db: DbSession,
+    _admin: CurrentAdminUser,
+) -> AdminProductRead:
+    product = admin_products.update_product(db, product_id=product_id, payload=payload)
+    db.commit()
+    return AdminProductRead.model_validate(product)
+
+
+@router.post("/products/{product_id}/archive", response_model=AdminProductRead)
+def archive_product(product_id: UUID, db: DbSession, admin: CurrentAdminUser) -> AdminProductRead:
+    product = admin_products.archive_product(db, product_id=product_id, admin=admin)
+    db.commit()
+    return AdminProductRead.model_validate(product)
+
+
+@router.post("/products/{product_id}/restore", response_model=AdminProductRead)
+def restore_product(product_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> AdminProductRead:
+    product = admin_products.restore_product(db, product_id=product_id)
+    db.commit()
+    return AdminProductRead.model_validate(product)
+
+
+@router.post("/products/{product_id}/variants", response_model=ProductVariantRead, status_code=status.HTTP_201_CREATED)
+def create_variant(
+    product_id: UUID,
+    payload: ProductVariantCreate,
+    db: DbSession,
+    _admin: CurrentAdminUser,
+) -> ProductVariantRead:
+    variant = admin_products.create_variant(db, product_id=product_id, payload=payload)
+    db.commit()
+    return ProductVariantRead.model_validate(variant)
+
+
+@router.patch("/product-variants/{variant_id}", response_model=ProductVariantRead)
+def update_variant(
+    variant_id: UUID,
+    payload: ProductVariantUpdate,
+    db: DbSession,
+    _admin: CurrentAdminUser,
+) -> ProductVariantRead:
+    variant = admin_products.update_variant(db, variant_id=variant_id, payload=payload)
+    db.commit()
+    return ProductVariantRead.model_validate(variant)
+
+
+@router.delete("/product-variants/{variant_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_variant(variant_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> None:
+    admin_products.delete_variant(db, variant_id=variant_id)
+    db.commit()
+    return None
+

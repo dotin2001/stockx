@@ -1,6 +1,6 @@
 # StockX API
 
-This workspace contains the FastAPI backend for the marketplace. It exposes versioned API routes, email/password auth, public catalog/search endpoints, protected listing/watchlist actions, and the PostgreSQL database foundation.
+This workspace contains the FastAPI backend for the marketplace. It exposes versioned API routes, email/password auth, public catalog/search endpoints, admin product management, protected listing/watchlist/cart actions, and the PostgreSQL database foundation.
 
 ## Setup
 
@@ -87,6 +87,23 @@ POST   /api/v1/listings
 GET    /api/v1/watchlist
 POST   /api/v1/watchlist
 DELETE /api/v1/watchlist/{id}
+GET    /api/v1/cart
+POST   /api/v1/cart/items
+PATCH  /api/v1/cart/items/{id}
+DELETE /api/v1/cart/items/{id}
+```
+
+Admin product management:
+
+```text
+GET    /api/v1/admin/products
+POST   /api/v1/admin/products
+PATCH  /api/v1/admin/products/{id}
+POST   /api/v1/admin/products/{id}/archive
+POST   /api/v1/admin/products/{id}/restore
+POST   /api/v1/admin/products/{id}/variants
+PATCH  /api/v1/admin/product-variants/{id}
+DELETE /api/v1/admin/product-variants/{id}
 ```
 
 Protected routes require an access token:
@@ -119,8 +136,9 @@ running API server.
 ## Running-Service API Smoke Test
 
 Use the smoke test when you want to verify the running FastAPI service,
-PostgreSQL-backed seed data, refresh cookies, auth flows, listing creation, and
-watchlist behavior through real HTTP requests.
+PostgreSQL-backed seed data, refresh cookies, auth flows, listing creation,
+watchlist/cart behavior, and admin archive/restore behavior through real HTTP
+requests.
 
 From the repository root, start PostgreSQL:
 
@@ -162,10 +180,12 @@ cookie can round-trip over `http://127.0.0.1:8000`.
 The smoke test expects seeded categories `sneakers`, `streetwear`, and
 `collectibles`, plus the seeded Jordan product slug
 `jordan-1-retro-high-element-gore-tex-black-particle-grey`. It creates a unique
-`api-smoke-...@example.test` user on every run, so repeated runs do not fail
-because of previous user data. Listings and revoked refresh-token rows created
-by smoke runs may remain in the local database. To reset local smoke data, use
-the optional rollback above and then re-run migrations and seed data.
+`api-smoke-...@example.test` users on every run, so repeated runs do not fail
+because of previous user data. Listings, cart rows, and revoked refresh-token
+rows created by smoke runs may remain in the local database. The admin smoke
+temporarily archives the seeded product and restores it before finishing. To
+reset local smoke data, use the optional rollback above and then re-run
+migrations and seed data.
 
 Common smoke-test failures:
 

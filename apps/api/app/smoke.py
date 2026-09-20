@@ -8,6 +8,10 @@ from time import time_ns
 from uuid import uuid4
 
 import httpx
+from sqlalchemy import select
+
+from app.db.session import SessionLocal
+from app.models import User
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -78,6 +82,20 @@ def unique_user() -> SmokeUser:
         email=f"api-smoke-{suffix}@example.test",
         password="smoke-password-123",
     )
+
+
+def unique_admin_user() -> SmokeUser:
+    user = unique_user()
+    return SmokeUser(name="API Smoke Admin", email=user.email.replace("api-smoke-", "api-smoke-admin-", 1), password=user.password)
+
+
+def promote_admin_user(email: str) -> None:
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.email == email))
+        if user is None:
+            fail(f"Could not promote smoke admin {email!r}; user was not found in the configured database.")
+        user.is_admin = True
+        session.commit()
 
 
 def require_error_code(body: dict | list, code: str, context: str) -> None:
@@ -249,7 +267,7 @@ def smoke_auth(client: httpx.Client, user: SmokeUser) -> tuple[str, str]:
     return marketplace_access_token, new_refresh
 
 
-def smoke_protected_marketplace(client: httpx.Client, access_token: str, product_id: str) -> None:
+def smoke_protected_marketplace(client: httpx.Client, access_token: str, product_id: str) -> str:
     unauth_listing = request(
         client,
         "POST",
@@ -270,6 +288,9 @@ def smoke_protected_marketplace(client: httpx.Client, access_token: str, product
     listing_body = response_json(listing, "listing creation")
     if not isinstance(listing_body, dict):
         fail("Listing response should be an object.")
+    listing_id = listing_body.get("id")
+    if not isinstance(listing_id, str) or not listing_id:
+        fail("Listing creation should return a listing id.")
     assert_equal(listing_body.get("product_id"), product_id, "Listing product mismatch.")
     assert_equal(listing_body.get("status"), "active", "Listing status mismatch.")
 
@@ -306,13 +327,110 @@ def smoke_protected_marketplace(client: httpx.Client, access_token: str, product
     if any(item.get("id") == watchlist_item_id for item in after_delete_body if isinstance(item, dict)):
         fail("Deleted watchlist item is still visible.")
 
+    return listing_id
+
+
+def smoke_cart(client: httpx.Client, access_token: str, listing_id: str) -> None:
+    unauth_cart = request(client, "GET", "/api/v1/cart")
+    assert_status(unauth_cart, 401, "Unauthenticated GET /api/v1/cart")
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    empty = request(client, "GET", "/api/v1/cart", headers=headers)
+    assert_status(empty, 200, "GET /api/v1/cart")
+    empty_body = response_json(empty, "empty cart")
+    if not isinstance(empty_body, dict):
+        fail("Cart response should be an object.")
+    assert_equal(empty_body.get("total_quantity"), 0, "Empty cart quantity mismatch.")
+    assert_equal(empty_body.get("items"), [], "Empty cart items mismatch.")
+
+    added = request(client, "POST", "/api/v1/cart/items", json={"listing_id": listing_id, "quantity": 2}, headers=headers)
+    assert_status(added, 201, "POST /api/v1/cart/items")
+    added_body = response_json(added, "cart add")
+    if not isinstance(added_body, dict):
+        fail("Cart add response should be an object.")
+    cart_item_id = added_body.get("id")
+    if not isinstance(cart_item_id, str) or not cart_item_id:
+        fail("Cart add should return an item id.")
+    assert_equal(added_body.get("listing_id"), listing_id, "Cart listing mismatch.")
+    assert_equal(added_body.get("quantity"), 2, "Cart quantity mismatch.")
+    assert_equal(added_body.get("available"), True, "Cart item should be available.")
+
+    merged = request(client, "POST", "/api/v1/cart/items", json={"listing_id": listing_id, "quantity": 1}, headers=headers)
+    assert_status(merged, 201, "Duplicate POST /api/v1/cart/items")
+    merged_body = response_json(merged, "cart merge")
+    if not isinstance(merged_body, dict):
+        fail("Cart merge response should be an object.")
+    assert_equal(merged_body.get("id"), cart_item_id, "Duplicate cart add should merge the existing item.")
+    assert_equal(merged_body.get("quantity"), 3, "Merged cart quantity mismatch.")
+
+    listed = request(client, "GET", "/api/v1/cart", headers=headers)
+    assert_status(listed, 200, "GET /api/v1/cart after add")
+    listed_body = response_json(listed, "cart list")
+    if not isinstance(listed_body, dict) or not isinstance(listed_body.get("items"), list):
+        fail("Cart list response should include an items list.")
+    assert_equal(listed_body.get("total_quantity"), 3, "Cart total quantity mismatch.")
+    if not any(item.get("id") == cart_item_id for item in listed_body["items"] if isinstance(item, dict)):
+        fail("Created cart item was not visible in the authenticated user's cart.")
+
+    deleted = request(client, "DELETE", f"/api/v1/cart/items/{cart_item_id}", headers=headers)
+    assert_status(deleted, 204, "DELETE /api/v1/cart/items/{id}")
+
+    after_delete = request(client, "GET", "/api/v1/cart", headers=headers)
+    assert_status(after_delete, 200, "GET /api/v1/cart after delete")
+    after_delete_body = response_json(after_delete, "cart list after delete")
+    if not isinstance(after_delete_body, dict):
+        fail("Cart list response after delete should be an object.")
+    assert_equal(after_delete_body.get("total_quantity"), 0, "Cart quantity should be zero after delete.")
+
+
+def smoke_admin_product_management(client: httpx.Client, product_id: str) -> None:
+    admin = unique_admin_user()
+    admin_token, _refresh_token = smoke_auth(client, admin)
+    promote_admin_user(admin.email)
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    products = request(client, "GET", "/api/v1/admin/products", params={"limit": 20, "offset": 0}, headers=headers)
+    assert_status(products, 200, "GET /api/v1/admin/products")
+    products_body = response_json(products, "admin product list")
+    if not isinstance(products_body, dict) or not isinstance(products_body.get("items"), list):
+        fail("Admin product list response should include an items list.")
+    if not any(item.get("id") == product_id for item in products_body["items"] if isinstance(item, dict)):
+        fail("Seeded product was not visible in the admin product list.")
+
+    archived = False
+    try:
+        archive = request(client, "POST", f"/api/v1/admin/products/{product_id}/archive", headers=headers)
+        assert_status(archive, 200, "POST /api/v1/admin/products/{id}/archive")
+        archive_body = response_json(archive, "admin product archive")
+        if not isinstance(archive_body, dict):
+            fail("Admin archive response should be an object.")
+        if archive_body.get("archived_at") is None:
+            fail("Admin archive response should include archived_at.")
+        archived = True
+
+        hidden_detail = request(client, "GET", f"/api/v1/products/{SEEDED_PRODUCT_SLUG}")
+        assert_status(hidden_detail, 404, "GET archived product detail")
+    finally:
+        if archived:
+            restore = request(client, "POST", f"/api/v1/admin/products/{product_id}/restore", headers=headers)
+            assert_status(restore, 200, "POST /api/v1/admin/products/{id}/restore")
+            restore_body = response_json(restore, "admin product restore")
+            if not isinstance(restore_body, dict):
+                fail("Admin restore response should be an object.")
+            assert_equal(restore_body.get("archived_at"), None, "Admin restore should clear archived_at.")
+
+    visible_detail = request(client, "GET", f"/api/v1/products/{SEEDED_PRODUCT_SLUG}")
+    assert_status(visible_detail, 200, "GET restored product detail")
+
 
 def run_smoke(base_url: str, timeout: float) -> None:
     with httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout) as client:
         product_id = smoke_public_api(client)
         user = unique_user()
         access_token, _refresh_token = smoke_auth(client, user)
-        smoke_protected_marketplace(client, access_token, product_id)
+        listing_id = smoke_protected_marketplace(client, access_token, product_id)
+        smoke_cart(client, access_token, listing_id)
+        smoke_admin_product_management(client, product_id)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

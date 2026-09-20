@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -29,8 +30,14 @@ class Product(TimestampMixin, Base):
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     lowest_ask_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_sold: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    archived_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     category = relationship("Category", back_populates="products")
+    archived_by_user = relationship("User", foreign_keys=[archived_by_user_id])
     variants = relationship("ProductVariant", back_populates="product", cascade="all, delete-orphan")
     listings = relationship("Listing", back_populates="product", cascade="all, delete-orphan")
     watchlist_items = relationship("WatchlistItem", back_populates="product", cascade="all, delete-orphan")
@@ -51,4 +58,3 @@ class ProductVariant(TimestampMixin, Base):
 
     product = relationship("Product", back_populates="variants")
     listings = relationship("Listing", back_populates="product_variant")
-
