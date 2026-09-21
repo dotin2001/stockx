@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Query, status
 
 from app.api.deps import CurrentAdminUser, DbSession
+from app.schemas.listing import ListingManagementRead, ListingPage
 from app.schemas.product import (
     AdminProductPage,
     AdminProductRead,
@@ -13,8 +14,33 @@ from app.schemas.product import (
     ProductVariantUpdate,
 )
 from app.services import admin_products
+from app.services import listings as listing_service
 
 router = APIRouter()
+
+
+@router.get("/listings", response_model=ListingPage)
+def list_listings(
+    db: DbSession,
+    _admin: CurrentAdminUser,
+    status_filter: str | None = Query(default=None, alias="status", pattern="^(active|sold|cancelled)$"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> ListingPage:
+    listings, total = listing_service.list_managed_listings(db, status_filter=status_filter, limit=limit, offset=offset)
+    return ListingPage(
+        items=[ListingManagementRead.model_validate(listing) for listing in listings],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/listings/{listing_id}/cancel", response_model=ListingManagementRead)
+def cancel_listing(listing_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> ListingManagementRead:
+    listing = listing_service.cancel_managed_listing(db, listing_id=listing_id)
+    db.commit()
+    return ListingManagementRead.model_validate(listing)
 
 
 @router.get("/products", response_model=AdminProductPage)
@@ -96,4 +122,3 @@ def delete_variant(variant_id: UUID, db: DbSession, _admin: CurrentAdminUser) ->
     admin_products.delete_variant(db, variant_id=variant_id)
     db.commit()
     return None
-

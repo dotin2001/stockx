@@ -83,7 +83,9 @@ GET    /api/v1/search?q=...
 Protected marketplace actions:
 
 ```text
+GET    /api/v1/listings
 POST   /api/v1/listings
+POST   /api/v1/listings/{id}/cancel
 GET    /api/v1/watchlist
 POST   /api/v1/watchlist
 DELETE /api/v1/watchlist/{id}
@@ -96,6 +98,8 @@ DELETE /api/v1/cart/items/{id}
 Admin product management:
 
 ```text
+GET    /api/v1/admin/listings
+POST   /api/v1/admin/listings/{id}/cancel
 GET    /api/v1/admin/products
 POST   /api/v1/admin/products
 PATCH  /api/v1/admin/products/{id}
@@ -113,6 +117,25 @@ Authorization: Bearer <access_token>
 ```
 
 Refresh tokens are stored in the `stockx_refresh` HTTP-only cookie by default and are rotated on refresh.
+
+## Admin Bootstrap
+
+Create a normal user through the API first, then promote that existing user from
+the backend environment:
+
+```bash
+cd apps/api
+python -m app.admin promote admin@example.com
+```
+
+If the package is installed in editable mode, the console script is equivalent:
+
+```bash
+stockx-api-admin promote admin@example.com
+```
+
+The promotion command normalizes the email, requires the user to already exist,
+does not ask for or change passwords, and leaves refresh-token records intact.
 
 ## Verification
 
@@ -137,7 +160,8 @@ running API server.
 
 Use the smoke test when you want to verify the running FastAPI service,
 PostgreSQL-backed seed data, refresh cookies, auth flows, listing creation,
-watchlist/cart behavior, and admin archive/restore behavior through real HTTP
+seller listing management, watchlist/cart behavior, admin bootstrap, admin
+listing management, and admin archive/restore behavior through real HTTP
 requests.
 
 From the repository root, start PostgreSQL:
@@ -183,9 +207,10 @@ The smoke test expects seeded categories `sneakers`, `streetwear`, and
 `api-smoke-...@example.test` users on every run, so repeated runs do not fail
 because of previous user data. Listings, cart rows, and revoked refresh-token
 rows created by smoke runs may remain in the local database. The admin smoke
-temporarily archives the seeded product and restores it before finishing. To
-reset local smoke data, use the optional rollback above and then re-run
-migrations and seed data.
+promotes a temporary smoke user, temporarily archives the seeded product,
+verifies archived-product listing rejection, and restores the product before
+finishing. To reset local smoke data, use the optional rollback above and then
+re-run migrations and seed data.
 
 Common smoke-test failures:
 

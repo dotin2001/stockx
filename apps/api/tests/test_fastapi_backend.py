@@ -2,14 +2,19 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import hash_password, verify_password
 from app.models import Category, Listing, Product, RefreshToken, User, WatchlistItem
 from app.schemas.product import ProductSummary
+from app.services import admin_products
 from app.services import auth as auth_service
+from app.services.admin_bootstrap import AdminPromotionError, promote_existing_user
+from app.services.integrity import matches_integrity_target
 
 
 def register_user(client: TestClient, email: str = "buyer@example.com") -> tuple[str, dict]:
@@ -87,6 +92,37 @@ def test_password_hashing_never_stores_raw_password(db_session: Session) -> None
     assert verify_password("password123", password_hash)
     assert not verify_password("wrong-password", password_hash)
     assert user.password_hash != "password123"
+
+
+def test_admin_promotion_service_preserves_auth_data(db_session: Session) -> None:
+    user = auth_service.register_user(
+        db_session,
+        name="Promote Me",
+        email="promote@example.com",
+        password="password123",
+    )
+    _record, _raw_token = auth_service.create_refresh_token_record(db_session, user)
+    password_hash = user.password_hash
+    refresh_token_ids = {token.id for token in user.refresh_tokens}
+
+    promoted = promote_existing_user(db_session, email="  PROMOTE@example.com ")
+    db_session.commit()
+
+    assert promoted.id == user.id
+    assert promoted.email == "promote@example.com"
+    assert promoted.is_admin is True
+    assert promoted.password_hash == password_hash
+    assert {token.id for token in promoted.refresh_tokens} == refresh_token_ids
+
+    promoted_again = promote_existing_user(db_session, email="promote@example.com")
+    db_session.commit()
+    assert promoted_again.id == user.id
+    assert promoted_again.is_admin is True
+    assert promoted_again.password_hash == password_hash
+    assert len(db_session.scalars(select(User).where(User.email == "promote@example.com")).all()) == 1
+
+    with pytest.raises(AdminPromotionError):
+        promote_existing_user(db_session, email="missing@example.com")
 
 
 def test_schema_serialization_for_product_summary(db_session: Session) -> None:
@@ -254,6 +290,42 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
     assert client.get("/api/v1/products/admin-updated-product").status_code == 200
 
 
+def test_marketplace_integrity_conflicts_are_stable(client: TestClient, db_session: Session, monkeypatch) -> None:
+    category = db_session.scalar(select(Category).where(Category.slug == "sneakers"))
+    assert category is not None
+    headers = admin_headers(client, db_session, email="integrity-admin@example.com")
+
+    monkeypatch.setattr(admin_products, "_ensure_unique_slug", lambda *_args, **_kwargs: None)
+    duplicate_slug = client.post(
+        "/api/v1/admin/products",
+        json={
+            "category_id": str(category.id),
+            "name": "Duplicate Slug Race",
+            "slug": "jordan-1-retro-high-test",
+            "brand": "Race",
+            "lowest_ask_cents": 100,
+            "total_sold": 0,
+        },
+        headers=headers,
+    )
+    assert duplicate_slug.status_code == 409
+    assert duplicate_slug.json()["error"]["code"] == "product_slug_exists"
+    assert "UNIQUE constraint failed" not in duplicate_slug.text
+
+    buyer_access, _body = register_user(client, email="integrity-watch@example.com")
+    buyer_headers = {"Authorization": f"Bearer {buyer_access}"}
+    product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
+    assert product is not None
+    assert client.post("/api/v1/watchlist", json={"product_id": str(product.id)}, headers=buyer_headers).status_code == 201
+    duplicate_watch = client.post("/api/v1/watchlist", json={"product_id": str(product.id)}, headers=buyer_headers)
+    assert duplicate_watch.status_code == 409
+    assert duplicate_watch.json()["error"]["code"] == "watchlist_duplicate"
+    assert "UNIQUE constraint failed" not in duplicate_watch.text
+
+    unknown_error = IntegrityError("statement", {}, Exception("foreign key constraint failed somewhere else"))
+    assert matches_integrity_target(unknown_error, ("uq_products_slug", "products.slug")) is False
+
+
 def test_admin_variant_management_flow(client: TestClient, db_session: Session) -> None:
     product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
     assert product is not None
@@ -364,6 +436,92 @@ def test_protected_listing_and_watchlist_flow(client: TestClient, db_session: Se
     assert db_session.get(WatchlistItem, UUID(watchlist_item_id)) is None
 
 
+def test_listing_management_and_archived_product_rejection(client: TestClient, db_session: Session) -> None:
+    product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
+    archived_product = db_session.scalar(select(Product).where(Product.slug == "supreme-test-hoodie"))
+    assert product is not None
+    assert archived_product is not None
+
+    assert client.get("/api/v1/listings").status_code == 401
+
+    seller_access, _body = register_user(client, email="listing-seller@example.com")
+    seller_headers = {"Authorization": f"Bearer {seller_access}"}
+    other_access, _body = register_user(client, email="listing-other@example.com")
+    other_headers = {"Authorization": f"Bearer {other_access}"}
+
+    created = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(product.id), "price_cents": 25100, "currency": "USD"},
+        headers=seller_headers,
+    )
+    assert created.status_code == 201
+    listing_id = created.json()["id"]
+
+    seller_list = client.get("/api/v1/listings", headers=seller_headers)
+    assert seller_list.status_code == 200
+    seller_body = seller_list.json()
+    assert seller_body["total"] == 1
+    assert seller_body["items"][0]["id"] == listing_id
+    assert seller_body["items"][0]["user_id"] == created.json()["user_id"]
+    assert seller_body["items"][0]["product"]["slug"] == "jordan-1-retro-high-test"
+    assert {"id", "user_id", "product", "price_cents", "currency", "status", "created_at", "updated_at"}.issubset(
+        seller_body["items"][0].keys()
+    )
+
+    other_list = client.get("/api/v1/listings", headers=other_headers)
+    assert other_list.status_code == 200
+    assert other_list.json()["items"] == []
+
+    cross_cancel = client.post(f"/api/v1/listings/{listing_id}/cancel", headers=other_headers)
+    assert cross_cancel.status_code == 404
+
+    own_cancel = client.post(f"/api/v1/listings/{listing_id}/cancel", headers=seller_headers)
+    assert own_cancel.status_code == 200
+    assert own_cancel.json()["status"] == "cancelled"
+
+    idempotent_cancel = client.post(f"/api/v1/listings/{listing_id}/cancel", headers=seller_headers)
+    assert idempotent_cancel.status_code == 200
+    assert idempotent_cancel.json()["status"] == "cancelled"
+
+    missing_cancel = client.post(f"/api/v1/listings/{uuid4()}/cancel", headers=seller_headers)
+    assert missing_cancel.status_code == 404
+
+    active_for_admin = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(product.id), "price_cents": 25200, "currency": "USD"},
+        headers=other_headers,
+    )
+    assert active_for_admin.status_code == 201
+    active_listing_id = active_for_admin.json()["id"]
+
+    admin_headers_value = admin_headers(client, db_session, email="listing-admin@example.com")
+    assert client.get("/api/v1/admin/listings").status_code == 401
+    non_admin = client.get("/api/v1/admin/listings", headers=seller_headers)
+    assert non_admin.status_code == 403
+
+    admin_active_list = client.get("/api/v1/admin/listings?status=active", headers=admin_headers_value)
+    assert admin_active_list.status_code == 200
+    assert any(item["id"] == active_listing_id for item in admin_active_list.json()["items"])
+    assert all(item["status"] == "active" for item in admin_active_list.json()["items"])
+
+    admin_cancel = client.post(f"/api/v1/admin/listings/{active_listing_id}/cancel", headers=admin_headers_value)
+    assert admin_cancel.status_code == 200
+    assert admin_cancel.json()["status"] == "cancelled"
+
+    non_admin_cancel = client.post(f"/api/v1/admin/listings/{listing_id}/cancel", headers=seller_headers)
+    assert non_admin_cancel.status_code == 403
+
+    archived_product.archived_at = datetime.now(UTC)
+    db_session.commit()
+    archived_create = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(archived_product.id), "price_cents": 10000, "currency": "USD"},
+        headers=seller_headers,
+    )
+    assert archived_create.status_code == 409
+    assert archived_create.json()["error"]["code"] == "product_archived"
+
+
 def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session: Session) -> None:
     product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
     assert product is not None
@@ -406,6 +564,7 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
     assert merged.status_code == 201
     assert merged.json()["id"] == item_id
     assert merged.json()["quantity"] == 5
+    assert "UNIQUE constraint failed" not in merged.text
 
     updated = client.patch(f"/api/v1/cart/items/{item_id}", json={"quantity": 4}, headers=buyer_headers)
     assert updated.status_code == 200

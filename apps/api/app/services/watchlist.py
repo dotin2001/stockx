@@ -4,10 +4,19 @@ from uuid import UUID
 
 from fastapi import status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.errors import APIError
 from app.models import Product, User, WatchlistItem
+from app.services.integrity import matches_integrity_target
+
+
+WATCHLIST_DUPLICATE_TARGETS = ("uq_watchlist_items_user_id_product_id", "watchlist_items.user_id, watchlist_items.product_id")
+
+
+def _watchlist_duplicate() -> APIError:
+    return APIError(status.HTTP_409_CONFLICT, "watchlist_duplicate", "Product is already in the watchlist.")
 
 
 def list_watchlist(db: Session, *, user: User) -> list[WatchlistItem]:
@@ -33,11 +42,17 @@ def add_watchlist_item(db: Session, *, user: User, product_id: UUID) -> Watchlis
         )
     )
     if existing is not None:
-        raise APIError(status.HTTP_409_CONFLICT, "watchlist_duplicate", "Product is already in the watchlist.")
+        raise _watchlist_duplicate()
 
     item = WatchlistItem(user_id=user.id, product_id=product_id)
     db.add(item)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if matches_integrity_target(exc, WATCHLIST_DUPLICATE_TARGETS):
+            raise _watchlist_duplicate() from exc
+        raise
     db.refresh(item, attribute_names=["product"])
     return item
 

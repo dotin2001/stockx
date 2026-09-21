@@ -8,10 +8,8 @@ from time import time_ns
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import select
 
-from app.db.session import SessionLocal
-from app.models import User
+from app.admin import promote_admin
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -90,12 +88,10 @@ def unique_admin_user() -> SmokeUser:
 
 
 def promote_admin_user(email: str) -> None:
-    with SessionLocal() as session:
-        user = session.scalar(select(User).where(User.email == email))
-        if user is None:
-            fail(f"Could not promote smoke admin {email!r}; user was not found in the configured database.")
-        user.is_admin = True
-        session.commit()
+    try:
+        promote_admin(email)
+    except Exception as exc:
+        fail(f"Could not promote smoke admin {email!r}: {exc}")
 
 
 def require_error_code(body: dict | list, code: str, context: str) -> None:
@@ -294,6 +290,40 @@ def smoke_protected_marketplace(client: httpx.Client, access_token: str, product
     assert_equal(listing_body.get("product_id"), product_id, "Listing product mismatch.")
     assert_equal(listing_body.get("status"), "active", "Listing status mismatch.")
 
+    seller_list = request(client, "GET", "/api/v1/listings", headers=headers)
+    assert_status(seller_list, 200, "GET /api/v1/listings")
+    seller_list_body = response_json(seller_list, "seller listing list")
+    if not isinstance(seller_list_body, dict) or not isinstance(seller_list_body.get("items"), list):
+        fail("Seller listing list response should include an items list.")
+    if not any(item.get("id") == listing_id for item in seller_list_body["items"] if isinstance(item, dict)):
+        fail("Created listing was not visible in the seller listing list.")
+
+    cancel_candidate = request(
+        client,
+        "POST",
+        "/api/v1/listings",
+        json={"product_id": product_id, "price_cents": 26000, "currency": "USD"},
+        headers=headers,
+    )
+    assert_status(cancel_candidate, 201, "POST /api/v1/listings for cancellation")
+    cancel_candidate_body = response_json(cancel_candidate, "listing cancellation candidate")
+    if not isinstance(cancel_candidate_body, dict):
+        fail("Cancellation candidate listing response should be an object.")
+    cancel_listing_id = cancel_candidate_body.get("id")
+    if not isinstance(cancel_listing_id, str) or not cancel_listing_id:
+        fail("Cancellation candidate should return a listing id.")
+
+    cancelled = request(client, "POST", f"/api/v1/listings/{cancel_listing_id}/cancel", headers=headers)
+    assert_status(cancelled, 200, "POST /api/v1/listings/{id}/cancel")
+    cancelled_body = response_json(cancelled, "seller listing cancel")
+    if not isinstance(cancelled_body, dict):
+        fail("Seller listing cancel response should be an object.")
+    assert_equal(cancelled_body.get("status"), "cancelled", "Seller listing cancel status mismatch.")
+
+    cancelled_again = request(client, "POST", f"/api/v1/listings/{cancel_listing_id}/cancel", headers=headers)
+    assert_status(cancelled_again, 200, "Repeated POST /api/v1/listings/{id}/cancel")
+    assert_equal(response_json(cancelled_again, "repeat seller listing cancel").get("status"), "cancelled", "Repeated cancel status mismatch.")
+
     watched = request(client, "POST", "/api/v1/watchlist", json={"product_id": product_id}, headers=headers)
     assert_status(watched, 201, "POST /api/v1/watchlist")
     watched_body = response_json(watched, "watchlist add")
@@ -383,11 +413,12 @@ def smoke_cart(client: httpx.Client, access_token: str, listing_id: str) -> None
     assert_equal(after_delete_body.get("total_quantity"), 0, "Cart quantity should be zero after delete.")
 
 
-def smoke_admin_product_management(client: httpx.Client, product_id: str) -> None:
+def smoke_admin_product_management(client: httpx.Client, product_id: str, seller_access_token: str, active_listing_id: str) -> None:
     admin = unique_admin_user()
     admin_token, _refresh_token = smoke_auth(client, admin)
     promote_admin_user(admin.email)
     headers = {"Authorization": f"Bearer {admin_token}"}
+    seller_headers = {"Authorization": f"Bearer {seller_access_token}"}
 
     products = request(client, "GET", "/api/v1/admin/products", params={"limit": 20, "offset": 0}, headers=headers)
     assert_status(products, 200, "GET /api/v1/admin/products")
@@ -396,6 +427,14 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str) -> Non
         fail("Admin product list response should include an items list.")
     if not any(item.get("id") == product_id for item in products_body["items"] if isinstance(item, dict)):
         fail("Seeded product was not visible in the admin product list.")
+
+    listings = request(client, "GET", "/api/v1/admin/listings", params={"status": "active"}, headers=headers)
+    assert_status(listings, 200, "GET /api/v1/admin/listings")
+    listings_body = response_json(listings, "admin listing list")
+    if not isinstance(listings_body, dict) or not isinstance(listings_body.get("items"), list):
+        fail("Admin listing list response should include an items list.")
+    if not any(item.get("id") == active_listing_id for item in listings_body["items"] if isinstance(item, dict)):
+        fail("Active smoke listing was not visible in the admin listing list.")
 
     archived = False
     try:
@@ -410,6 +449,16 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str) -> Non
 
         hidden_detail = request(client, "GET", f"/api/v1/products/{SEEDED_PRODUCT_SLUG}")
         assert_status(hidden_detail, 404, "GET archived product detail")
+
+        archived_listing = request(
+            client,
+            "POST",
+            "/api/v1/listings",
+            json={"product_id": product_id, "price_cents": 27000, "currency": "USD"},
+            headers=seller_headers,
+        )
+        assert_status(archived_listing, 409, "POST /api/v1/listings for archived product")
+        require_error_code(response_json(archived_listing, "archived product listing"), "product_archived", "Archived listing")
     finally:
         if archived:
             restore = request(client, "POST", f"/api/v1/admin/products/{product_id}/restore", headers=headers)
@@ -430,7 +479,7 @@ def run_smoke(base_url: str, timeout: float) -> None:
         access_token, _refresh_token = smoke_auth(client, user)
         listing_id = smoke_protected_marketplace(client, access_token, product_id)
         smoke_cart(client, access_token, listing_id)
-        smoke_admin_product_management(client, product_id)
+        smoke_admin_product_management(client, product_id, access_token, listing_id)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

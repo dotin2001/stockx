@@ -19,6 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
+stockx-api-admin = "app.admin:main"
 stockx-api-smoke = "app.smoke:main"
 
 [project.optional-dependencies]

@@ -4,17 +4,20 @@ from uuid import UUID
 
 from fastapi import status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.errors import APIError
 from app.models import CartItem, Listing, Product, User
 from app.schemas.cart import CartItemRead, CartListingRead
+from app.services.integrity import matches_integrity_target
 
 
 CART_ITEM_LOAD_OPTIONS = (
     selectinload(CartItem.listing).selectinload(Listing.product).selectinload(Product.category),
 )
 LISTING_LOAD_OPTIONS = (selectinload(Listing.product).selectinload(Product.category),)
+CART_DUPLICATE_TARGETS = ("uq_cart_items_user_id_listing_id", "cart_items.user_id, cart_items.listing_id")
 
 
 def _cart_item_query(user: User):
@@ -53,6 +56,7 @@ def list_cart_items(db: Session, *, user: User) -> list[CartItem]:
 
 
 def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -> CartItem:
+    user_id = user.id
     listing = _load_listing(db, listing_id)
     _require_listing_available(listing)
 
@@ -68,7 +72,22 @@ def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -
     else:
         item.quantity += quantity
 
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if not matches_integrity_target(exc, CART_DUPLICATE_TARGETS):
+            raise
+        item = db.scalar(
+            select(CartItem)
+            .where(CartItem.user_id == user_id, CartItem.listing_id == listing_id)
+            .options(*CART_ITEM_LOAD_OPTIONS)
+            .execution_options(populate_existing=True)
+        )
+        if item is None:
+            raise APIError(status.HTTP_409_CONFLICT, "cart_item_duplicate", "Cart item already exists.") from exc
+        item.quantity += quantity
+        db.flush()
     return _load_user_cart_item(db, user=user, item_id=item.id)
 
 

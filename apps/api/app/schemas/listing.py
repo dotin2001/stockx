@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.product import ProductSummary
+
 
 class ListingCreate(BaseModel):
     product_id: UUID
@@ -24,3 +26,13 @@ class ListingRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class ListingManagementRead(ListingRead):
+    product: ProductSummary
+
+
+class ListingPage(BaseModel):
+    items: list[ListingManagementRead]
+    total: int
+    limit: int
+    offset: int

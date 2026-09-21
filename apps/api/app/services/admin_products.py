@@ -4,15 +4,22 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.errors import APIError
 from app.models import Category, Product, ProductVariant, User
 from app.schemas.product import ProductCreate, ProductUpdate, ProductVariantCreate, ProductVariantUpdate
+from app.services.integrity import matches_integrity_target
 
 
 PRODUCT_LOAD_OPTIONS = (selectinload(Product.category), selectinload(Product.variants))
+PRODUCT_SLUG_TARGETS = ("uq_products_slug", "ix_products_slug", "products.slug")
+
+
+def _product_slug_conflict() -> APIError:
+    return APIError(status.HTTP_409_CONFLICT, "product_slug_exists", "A product already exists with this slug.")
 
 
 def _load_product(db: Session, product_id: UUID) -> Product | None:
@@ -31,7 +38,7 @@ def _ensure_unique_slug(db: Session, slug: str, *, excluding_product_id: UUID | 
     if excluding_product_id is not None:
         query = query.where(Product.id != excluding_product_id)
     if db.scalar(query) is not None:
-        raise APIError(status.HTTP_409_CONFLICT, "product_slug_exists", "A product already exists with this slug.")
+        raise _product_slug_conflict()
 
 
 def list_managed_products(
@@ -63,7 +70,13 @@ def create_product(db: Session, payload: ProductCreate) -> Product:
     _ensure_unique_slug(db, payload.slug)
     product = Product(**payload.model_dump())
     db.add(product)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if matches_integrity_target(exc, PRODUCT_SLUG_TARGETS):
+            raise _product_slug_conflict() from exc
+        raise
     return _load_product(db, product.id) or product
 
 
@@ -82,7 +95,13 @@ def update_product(db: Session, *, product_id: UUID, payload: ProductUpdate) -> 
 
     for field, value in values.items():
         setattr(product, field, value)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if matches_integrity_target(exc, PRODUCT_SLUG_TARGETS):
+            raise _product_slug_conflict() from exc
+        raise
     return _load_product(db, product.id) or product
 
 
@@ -131,4 +150,3 @@ def delete_variant(db: Session, *, variant_id: UUID) -> None:
     if variant is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "variant_not_found", "Product variant was not found.")
     db.delete(variant)
-
