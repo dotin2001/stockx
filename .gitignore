@@ -1,10 +1,61 @@
+# OS and editor files
 .DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Local environment files
+.env
+.env.*
+!.env.example
+!apps/**/.env.example
+apps/api/.env
+apps/web/.env
+apps/web/.env*.local
+
+# Python and backend artifacts
 __pycache__/
 *.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 *.egg-info/
 .venv/
-apps/api/.env
 apps/api/.venv/
+
+# Node and frontend dependencies
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# Frontend build output and caches
+apps/web/.next/
+apps/web/out/
+apps/web/build/
+apps/web/dist/
+apps/web/.turbo/
+apps/web/.vercel/
+apps/web/.swc/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Coverage reports
+coverage/
+apps/web/coverage/

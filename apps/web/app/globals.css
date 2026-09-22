@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background: #f7f8f8;
+  color: #101412;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+img {
+  max-width: 100%;
+}
+
+@layer base {
+  a,
+  button,
+  input,
+  select,
+  textarea {
+    @apply focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-market-green;
+  }
+}
+
+@layer components {
+  .page-shell {
+    @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .surface {
+    @apply border border-ink-200 bg-white shadow-sm;
+  }
+
+  .ticker-track {
+    animation: ticker 18s linear infinite;
+  }
+
+  .reveal-start {
+    opacity: 0;
+    transform: translateY(32px);
+    transition: opacity 700ms ease, transform 700ms ease;
+  }
+
+  .reveal-in {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .ticker-track {
+    animation: none;
+  }
+
+  .reveal-start {
+    opacity: 1;
+    transform: none;
+  }
+}
