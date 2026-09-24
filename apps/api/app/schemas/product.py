@@ -15,6 +15,17 @@ class ProductVariantRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ActiveListingSummary(BaseModel):
+    id: UUID
+    price_cents: int
+    currency: str
+    status: str
+    product_variant_id: UUID | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ProductVariantCreate(BaseModel):
     size: str | None = Field(default=None, max_length=64)
     color: str | None = Field(default=None, max_length=128)
@@ -51,6 +62,7 @@ class ProductSummary(BaseModel):
 class ProductDetail(ProductSummary):
     description: str | None = None
     variants: list[ProductVariantRead] = Field(default_factory=list)
+    lowest_active_listing: ActiveListingSummary | None = None
 
 
 class ProductPage(BaseModel):

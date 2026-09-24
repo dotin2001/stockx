@@ -149,6 +149,17 @@ export const api = {
       method: "POST",
       body: { listing_id: listingId, quantity },
       accessToken
+    }),
+  updateCartItem: (accessToken: string, itemId: UUID, quantity: number) =>
+    apiRequest<Cart["items"][number]>(`/api/v1/cart/items/${itemId}`, {
+      method: "PATCH",
+      body: { quantity },
+      accessToken
+    }),
+  removeCartItem: (accessToken: string, itemId: UUID) =>
+    apiRequest<void>(`/api/v1/cart/items/${itemId}`, {
+      method: "DELETE",
+      accessToken
     })
 };
 

@@ -2,30 +2,59 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
 import type { ProductDetail } from "@/lib/types";
 
 export function ProductDetailView({ product }: { product: ProductDetail }) {
+  const router = useRouter();
   const { status, accessToken } = useAuth();
-  const [watchMessage, setWatchMessage] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [watching, setWatching] = useState(false);
+  const [carting, setCarting] = useState<"cart" | "buy" | null>(null);
+  const activeListing = product.lowest_active_listing;
 
   async function addToWatchlist() {
     if (!accessToken) {
-      setWatchMessage("Log in to watch this product.");
+      setActionMessage("Log in to watch this product.");
       return;
     }
     setWatching(true);
-    setWatchMessage(null);
+    setActionMessage(null);
     try {
       await api.addWatchlist(accessToken, product.id);
-      setWatchMessage("Added to your watchlist.");
+      setActionMessage("Added to your watchlist.");
     } catch (error) {
-      setWatchMessage(error instanceof ApiError ? error.message : "Could not update watchlist.");
+      setActionMessage(error instanceof ApiError ? error.message : "Could not update watchlist.");
     } finally {
       setWatching(false);
+    }
+  }
+
+  async function addListingToCart(intent: "cart" | "buy") {
+    if (!accessToken) {
+      router.push("/login");
+      return;
+    }
+    if (!activeListing) {
+      setActionMessage("No active ask is available for this product yet.");
+      return;
+    }
+    setCarting(intent);
+    setActionMessage(null);
+    try {
+      await api.addCartItem(accessToken, activeListing.id);
+      if (intent === "buy") {
+        router.push("/account?checkout=1#cart");
+        return;
+      }
+      setActionMessage("Added to your cart.");
+    } catch (error) {
+      setActionMessage(error instanceof ApiError ? error.message : "Could not update cart.");
+    } finally {
+      setCarting(null);
     }
   }
 
@@ -46,7 +75,7 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
         <div className="mt-8 grid grid-cols-2 gap-3 border-y border-ink-200 py-5">
           <div>
             <p className="text-xs text-ink-500">Lowest Ask</p>
-            <p className="text-2xl font-black">{formatMoney(product.lowest_ask_cents)}</p>
+            <p className="text-2xl font-black">{formatMoney(activeListing?.price_cents ?? product.lowest_ask_cents)}</p>
           </div>
           <div>
             <p className="text-xs text-ink-500">Sold</p>
@@ -68,6 +97,29 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
         <div className="mt-8 grid gap-3">
           {status === "authenticated" ? (
             <>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => void addListingToCart("cart")}
+                  disabled={!activeListing || carting !== null}
+                  className="bg-market-green px-5 py-3 text-sm font-bold text-white hover:bg-ink-900 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {carting === "cart" ? "Adding..." : "Add to Cart"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void addListingToCart("buy")}
+                  disabled={!activeListing || carting !== null}
+                  className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {carting === "buy" ? "Starting..." : "Buy Now"}
+                </button>
+              </div>
+              {!activeListing ? (
+                <p className="border border-ink-200 bg-ink-50 px-3 py-2 text-sm font-semibold text-ink-600">
+                  No active ask is available yet. You can still watch or sell this product.
+                </p>
+              ) : null}
               <button type="button" onClick={addToWatchlist} disabled={watching} className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60">
                 {watching ? "Adding..." : "Add to Watchlist"}
               </button>
@@ -76,11 +128,21 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
               </Link>
             </>
           ) : (
-            <Link href="/login" className="bg-market-green px-5 py-3 text-center text-sm font-bold text-white hover:bg-ink-900">
-              Log in to Watch or Sell
-            </Link>
+            <>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Link href="/login" className="bg-market-green px-5 py-3 text-center text-sm font-bold text-white hover:bg-ink-900">
+                  Add to Cart
+                </Link>
+                <Link href="/login" className="bg-ink-900 px-5 py-3 text-center text-sm font-bold text-white hover:bg-market-green">
+                  Buy Now
+                </Link>
+              </div>
+              <Link href="/login" className="border border-ink-900 px-5 py-3 text-center text-sm font-bold text-ink-900 hover:bg-ink-900 hover:text-white">
+                Log in to Watch or Sell
+              </Link>
+            </>
           )}
-          {watchMessage ? <p className="text-sm font-semibold text-ink-600">{watchMessage}</p> : null}
+          {actionMessage ? <p className="text-sm font-semibold text-ink-600">{actionMessage}</p> : null}
         </div>
       </aside>
     </div>

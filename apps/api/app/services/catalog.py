@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Category, Product
+from app.models import Category, Listing, Product
 
 
 def list_categories(db: Session) -> list[Category]:
@@ -45,6 +45,20 @@ def get_product_by_slug(db: Session, slug: str) -> Product | None:
         .where(Product.slug == slug, Product.archived_at.is_(None))
         .options(selectinload(Product.category), selectinload(Product.variants))
         .execution_options(populate_existing=True)
+    )
+
+
+def get_lowest_active_listing_for_product(db: Session, product: Product) -> Listing | None:
+    if product.archived_at is not None:
+        return None
+    return db.scalar(
+        select(Listing)
+        .where(
+            Listing.product_id == product.id,
+            Listing.status == "active",
+        )
+        .order_by(Listing.price_cents.asc(), Listing.created_at.asc(), Listing.id.asc())
+        .limit(1)
     )
 
 

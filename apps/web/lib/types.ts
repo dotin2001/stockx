@@ -22,6 +22,15 @@ export type ProductVariant = {
   sku: string | null;
 };
 
+export type ActiveListingSummary = {
+  id: UUID;
+  price_cents: number;
+  currency: string;
+  status: "active" | "sold" | "cancelled";
+  product_variant_id: UUID | null;
+  created_at: string;
+};
+
 export type ProductSummary = {
   id: UUID;
   name: string;
@@ -38,6 +47,7 @@ export type ProductSummary = {
 export type ProductDetail = ProductSummary & {
   description: string | null;
   variants: ProductVariant[];
+  lowest_active_listing: ActiveListingSummary | null;
 };
 
 export type ProductPage = {

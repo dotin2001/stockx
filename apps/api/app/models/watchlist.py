@@ -32,4 +32,3 @@ class WatchlistItem(Base):
 
     user = relationship("User", back_populates="watchlist_items")
     product = relationship("Product", back_populates="watchlist_items")
-

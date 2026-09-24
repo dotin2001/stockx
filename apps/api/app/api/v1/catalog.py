@@ -3,7 +3,7 @@ from fastapi import APIRouter, Query, status
 from app.api.deps import DbSession
 from app.api.errors import APIError
 from app.schemas.category import CategoryRead
-from app.schemas.product import ProductDetail, ProductPage, ProductSummary
+from app.schemas.product import ActiveListingSummary, ProductDetail, ProductPage, ProductSummary
 from app.services import catalog as catalog_service
 
 router = APIRouter()
@@ -52,7 +52,10 @@ def get_product(slug: str, db: DbSession) -> ProductDetail:
     product = catalog_service.get_product_by_slug(db, slug)
     if product is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "product_not_found", "Product was not found.")
-    return ProductDetail.model_validate(product)
+    detail = ProductDetail.model_validate(product)
+    lowest_listing = catalog_service.get_lowest_active_listing_for_product(db, product)
+    detail.lowest_active_listing = ActiveListingSummary.model_validate(lowest_listing) if lowest_listing else None
+    return detail
 
 
 @router.get("/search", response_model=ProductPage)
@@ -69,4 +72,3 @@ def search_products(
         limit=limit,
         offset=offset,
     )
-

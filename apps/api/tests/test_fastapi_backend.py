@@ -204,6 +204,7 @@ def test_catalog_product_category_detail_and_search(client: TestClient) -> None:
     detail = client.get("/api/v1/products/jordan-1-retro-high-test")
     assert detail.status_code == 200
     assert detail.json()["variants"][0]["size"] == "10"
+    assert detail.json()["lowest_active_listing"] is None
 
     search = client.get("/api/v1/search?q=jordan")
     assert search.status_code == 200
@@ -434,6 +435,64 @@ def test_protected_listing_and_watchlist_flow(client: TestClient, db_session: Se
     own_delete = client.delete(f"/api/v1/watchlist/{watchlist_item_id}", headers=headers)
     assert own_delete.status_code == 204
     assert db_session.get(WatchlistItem, UUID(watchlist_item_id)) is None
+
+
+def test_product_detail_exposes_lowest_active_listing(client: TestClient, db_session: Session) -> None:
+    product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
+    archived_product = db_session.scalar(select(Product).where(Product.slug == "supreme-test-hoodie"))
+    assert product is not None
+    assert archived_product is not None
+
+    seller_access, _body = register_user(client, email="detail-seller@example.com")
+    seller_headers = {"Authorization": f"Bearer {seller_access}"}
+
+    higher = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(product.id), "price_cents": 26000, "currency": "USD"},
+        headers=seller_headers,
+    )
+    assert higher.status_code == 201
+    lower = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(product.id), "price_cents": 24000, "currency": "USD"},
+        headers=seller_headers,
+    )
+    assert lower.status_code == 201
+
+    detail = client.get("/api/v1/products/jordan-1-retro-high-test")
+    assert detail.status_code == 200
+    assert detail.json()["lowest_active_listing"]["id"] == lower.json()["id"]
+    assert detail.json()["lowest_active_listing"]["price_cents"] == 24000
+    assert detail.json()["lowest_active_listing"]["status"] == "active"
+
+    lower_model = db_session.get(Listing, UUID(lower.json()["id"]))
+    assert lower_model is not None
+    lower_model.status = "sold"
+    db_session.commit()
+
+    detail_after_sold = client.get("/api/v1/products/jordan-1-retro-high-test")
+    assert detail_after_sold.status_code == 200
+    assert detail_after_sold.json()["lowest_active_listing"]["id"] == higher.json()["id"]
+
+    higher_model = db_session.get(Listing, UUID(higher.json()["id"]))
+    assert higher_model is not None
+    higher_model.status = "cancelled"
+    db_session.commit()
+
+    detail_without_active = client.get("/api/v1/products/jordan-1-retro-high-test")
+    assert detail_without_active.status_code == 200
+    assert detail_without_active.json()["lowest_active_listing"] is None
+
+    archived_listing = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(archived_product.id), "price_cents": 9000, "currency": "USD"},
+        headers=seller_headers,
+    )
+    assert archived_listing.status_code == 201
+    archived_product.archived_at = datetime.now(UTC)
+    db_session.commit()
+
+    assert client.get("/api/v1/products/supreme-test-hoodie").status_code == 404
 
 
 def test_listing_management_and_archived_product_rejection(client: TestClient, db_session: Session) -> None:

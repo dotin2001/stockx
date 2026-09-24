@@ -18,7 +18,6 @@ def list_watchlist(current_user: CurrentUser, db: DbSession) -> list[WatchlistIt
 def add_watchlist_item(payload: WatchlistAdd, current_user: CurrentUser, db: DbSession) -> WatchlistItemRead:
     item = watchlist_service.add_watchlist_item(db, user=current_user, product_id=payload.product_id)
     db.commit()
-    db.refresh(item)
     return WatchlistItemRead.model_validate(item)
 
 
