@@ -1,10 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useId, useState } from "react";
 
 export function SearchBar() {
   const router = useRouter();
+  const searchId = useId();
   const [query, setQuery] = useState("");
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -17,7 +18,7 @@ export function SearchBar() {
 
   return (
     <form onSubmit={submit} role="search" className="relative flex min-w-0 flex-1">
-      <label htmlFor="site-search" className="sr-only">
+      <label htmlFor={searchId} className="sr-only">
         Search products
       </label>
       <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-500" aria-hidden="true">
@@ -27,7 +28,7 @@ export function SearchBar() {
         </svg>
       </span>
       <input
-        id="site-search"
+        id={searchId}
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         placeholder="Search for brands, color, etc"

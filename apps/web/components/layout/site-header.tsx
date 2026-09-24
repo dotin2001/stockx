@@ -49,7 +49,7 @@ export function SiteHeader() {
           onClick={() => setMenuOpen((open) => !open)}
         >
           <span className="sr-only">Menu</span>
-          <svg viewBox="0 0 24 24" className={`h-5 w-5 transition-transform ${menuOpen ? "rotate-90" : ""}`} fill="none" stroke="currentColor" strokeWidth="2">
+          <svg viewBox="0 0 24 24" className={`h-5 w-5 motion-safe:transition-transform ${menuOpen ? "motion-safe:rotate-90" : ""}`} fill="none" stroke="currentColor" strokeWidth="2">
             {menuOpen ? <path d="M6 6l12 12M18 6 6 18" /> : <path d="M4 7h16M4 12h16M4 17h16" />}
           </svg>
         </button>
@@ -78,7 +78,7 @@ export function SiteHeader() {
               </Link>
             </>
           )}
-          <Link href="/sell" className="bg-market-green px-5 py-2.5 font-semibold text-white transition hover:-translate-y-0.5 hover:bg-ink-900">
+          <Link href="/sell" className="bg-market-green px-5 py-2.5 font-semibold text-white transition motion-safe:hover:-translate-y-0.5 hover:bg-ink-900">
             Sell
           </Link>
         </nav>

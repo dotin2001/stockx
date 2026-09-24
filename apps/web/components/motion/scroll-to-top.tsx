@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useReducedMotion } from "@/hooks/use-reduced-motion";
 
 export function ScrollToTop() {
   const [visible, setVisible] = useState(false);
+  const reduced = useReducedMotion();
 
   useEffect(() => {
     const update = () => setVisible(window.scrollY > 520);
@@ -19,7 +21,7 @@ export function ScrollToTop() {
   return (
     <button
       type="button"
-      onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+      onClick={() => window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" })}
       className="fixed bottom-5 right-5 z-40 grid h-12 w-12 place-items-center border border-ink-900 bg-white text-ink-900 shadow-lift transition hover:bg-market-green hover:text-white"
       aria-label="Scroll to top"
     >

@@ -4,11 +4,11 @@ import { formatCount, formatMoney } from "@/lib/format";
 
 export function ProductCard({ product }: { product: ProductSummary }) {
   return (
-    <Link href={`/product/${product.slug}`} className="group surface flex min-h-[300px] flex-col overflow-hidden transition duration-200 hover:-translate-y-1 hover:shadow-lift">
+    <Link href={`/product/${product.slug}`} className="group surface flex min-h-[300px] flex-col overflow-hidden transition duration-200 motion-safe:hover:-translate-y-1 hover:shadow-lift">
       <div className="grid aspect-[4/3] place-items-center bg-white p-6">
         {product.image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={product.image_url} alt={product.name} className="max-h-44 object-contain transition duration-300 group-hover:scale-105" />
+          <img src={product.image_url} alt={product.name} className="max-h-44 object-contain transition duration-300 motion-safe:group-hover:scale-105" />
         ) : (
           <div className="grid h-32 w-32 place-items-center bg-ink-100 text-xs font-bold uppercase text-ink-500">No image</div>
         )}

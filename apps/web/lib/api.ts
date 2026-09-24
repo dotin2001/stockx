@@ -1,6 +1,8 @@
 import type {
+  ApiErrorEnvelope,
   AuthResponse,
   Cart,
+  Category,
   ListingCreatePayload,
   ListingPage,
   ListingRead,
@@ -63,7 +65,7 @@ async function apiRequest<T>(path: string, options: RequestOptions = {}): Promis
   const json = (await response.json().catch(() => null)) as unknown;
   if (!response.ok) {
     if (json && typeof json === "object" && "error" in json) {
-      const error = (json as { error?: { code?: string; message?: string; details?: unknown } }).error;
+      const error = (json as Partial<ApiErrorEnvelope>).error;
       throw new ApiError(
         response.status,
         error?.code ?? "api_error",
@@ -78,7 +80,7 @@ async function apiRequest<T>(path: string, options: RequestOptions = {}): Promis
 }
 
 export const api = {
-  listCategories: () => apiRequest<ProductPage["items"][number]["category"][]>("/api/v1/categories"),
+  listCategories: () => apiRequest<Category[]>("/api/v1/categories"),
   listProducts: (limit = 20, offset = 0) => apiRequest<ProductPage>(`/api/v1/products?limit=${limit}&offset=${offset}`),
   listCategoryProducts: (slug: string, limit = 20, offset = 0) =>
     apiRequest<ProductPage>(`/api/v1/categories/${encodeURIComponent(slug)}/products?limit=${limit}&offset=${offset}`),

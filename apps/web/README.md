@@ -11,6 +11,9 @@ npm install
 npm run web:dev
 ```
 
+Use Node.js `>=18.18.0`; the Next.js build will fail on older Node 18
+releases.
+
 The frontend expects the FastAPI backend to be available for catalog, auth,
 listing, watchlist, and cart data. Start the backend and seed PostgreSQL using
 the instructions in `apps/api/README.md`.
@@ -29,6 +32,14 @@ The backend should allow the frontend origin in `CORS_ORIGINS`, for example:
 ```text
 CORS_ORIGINS=http://localhost:3000
 ```
+
+## Data Contract Notes
+
+Catalog, search, product detail, account, sell, watchlist, and cart data flow
+through `apps/web/lib/api.ts` and typed DTOs in `apps/web/lib/types.ts`.
+Category navigation labels, hero images, and filter chips are curated frontend
+metadata for wayfinding; product records, prices, sold counts, variants, and
+pagination still come from the backend API.
 
 ## Routes
 
