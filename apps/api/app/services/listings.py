@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.errors import APIError
 from app.models import Listing, Product, ProductVariant, User
+from app.services import seller_profiles as seller_profile_service
 
 
 LISTING_LOAD_OPTIONS = (selectinload(Listing.product).selectinload(Product.category),)
@@ -23,6 +24,9 @@ def create_listing(
     price_cents: int,
     currency: str,
 ) -> Listing:
+    if not seller_profile_service.is_seller(db, user=user):
+        raise APIError(status.HTTP_403_FORBIDDEN, "seller_required", "Seller registration is required to create listings.")
+
     product = db.get(Product, product_id)
     if product is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "product_not_found", "Product was not found.")

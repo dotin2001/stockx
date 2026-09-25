@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import hash_password, verify_password
-from app.models import Category, Listing, Product, RefreshToken, User, WatchlistItem
+from app.models import Category, Listing, Product, RefreshToken, SellerProfile, User, WatchlistItem
 from app.schemas.product import ProductSummary
 from app.services import admin_products
 from app.services import auth as auth_service
@@ -25,6 +25,28 @@ def register_user(client: TestClient, email: str = "buyer@example.com") -> tuple
     assert response.status_code == 201
     body = response.json()
     return body["access_token"], body
+
+
+def seller_profile_payload(**overrides) -> dict:
+    payload = {
+        "phone_number": "+15555550123",
+        "address_line1": "123 Market Street",
+        "address_line2": "Suite 4",
+        "city": "San Francisco",
+        "state": "CA",
+        "postal_code": "94105",
+        "country": "US",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def register_seller(client: TestClient, email: str) -> tuple[str, dict]:
+    access_token, body = register_user(client, email=email)
+    headers = {"Authorization": f"Bearer {access_token}"}
+    profile = client.put("/api/v1/seller/profile", json=seller_profile_payload(), headers=headers)
+    assert profile.status_code == 200
+    return access_token, body
 
 
 def admin_headers(client: TestClient, db_session: Session, email: str = "admin@example.com") -> dict[str, str]:
@@ -140,6 +162,7 @@ def test_auth_register_login_me_refresh_and_logout(client: TestClient, db_sessio
 
     assert body["token_type"] == "bearer"
     assert body["user"]["email"] == "buyer@example.com"
+    assert body["user"]["is_seller"] is False
     assert "stockx_refresh" in client.cookies
 
     user = db_session.scalar(select(User).where(User.email == "buyer@example.com"))
@@ -169,6 +192,7 @@ def test_auth_register_login_me_refresh_and_logout(client: TestClient, db_sessio
     me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access_token}"})
     assert me.status_code == 200
     assert me.json()["email"] == "buyer@example.com"
+    assert me.json()["is_seller"] is False
 
     old_refresh = client.cookies.get("stockx_refresh")
     refresh = client.post("/api/v1/auth/refresh")
@@ -185,6 +209,41 @@ def test_auth_register_login_me_refresh_and_logout(client: TestClient, db_sessio
 
     revoked_count = len(db_session.scalars(select(RefreshToken).where(RefreshToken.revoked_at.is_not(None))).all())
     assert revoked_count >= 2
+
+
+def test_seller_profile_registration_and_auth_state(client: TestClient, db_session: Session) -> None:
+    assert client.get("/api/v1/seller/profile").status_code == 401
+    assert client.put("/api/v1/seller/profile", json=seller_profile_payload()).status_code == 401
+
+    access_token, _body = register_user(client, email="profile-seller@example.com")
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    missing = client.put("/api/v1/seller/profile", json={"phone_number": "+15555550123"}, headers=headers)
+    assert missing.status_code == 422
+
+    before = client.get("/api/v1/seller/profile", headers=headers)
+    assert before.status_code == 404
+    assert before.json()["error"]["code"] == "seller_profile_not_found"
+
+    created = client.put("/api/v1/seller/profile", json=seller_profile_payload(), headers=headers)
+    assert created.status_code == 200
+    assert created.json()["phone_number"] == "+15555550123"
+    assert created.json()["country"] == "US"
+    profile_id = created.json()["id"]
+
+    me = client.get("/api/v1/auth/me", headers=headers)
+    assert me.status_code == 200
+    assert me.json()["is_seller"] is True
+
+    updated = client.put("/api/v1/seller/profile", json=seller_profile_payload(phone_number="+15555550999"), headers=headers)
+    assert updated.status_code == 200
+    assert updated.json()["id"] == profile_id
+    assert updated.json()["phone_number"] == "+15555550999"
+
+    user = db_session.scalar(select(User).where(User.email == "profile-seller@example.com"))
+    assert user is not None
+    profiles = db_session.scalars(select(SellerProfile).where(SellerProfile.user_id == user.id)).all()
+    assert len(profiles) == 1
 
 
 def test_catalog_product_category_detail_and_search(client: TestClient) -> None:
@@ -388,6 +447,17 @@ def test_protected_listing_and_watchlist_flow(client: TestClient, db_session: Se
     headers = {"Authorization": f"Bearer {access_token}"}
     product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
 
+    non_seller_listing = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(product.id), "price_cents": 25000, "currency": "USD"},
+        headers=headers,
+    )
+    assert non_seller_listing.status_code == 403
+    assert non_seller_listing.json()["error"]["code"] == "seller_required"
+
+    profile = client.put("/api/v1/seller/profile", json=seller_profile_payload(), headers=headers)
+    assert profile.status_code == 200
+
     listing = client.post(
         "/api/v1/listings",
         json={"product_id": str(product.id), "price_cents": 25000, "currency": "USD"},
@@ -443,7 +513,7 @@ def test_product_detail_exposes_lowest_active_listing(client: TestClient, db_ses
     assert product is not None
     assert archived_product is not None
 
-    seller_access, _body = register_user(client, email="detail-seller@example.com")
+    seller_access, _body = register_seller(client, email="detail-seller@example.com")
     seller_headers = {"Authorization": f"Bearer {seller_access}"}
 
     higher = client.post(
@@ -503,9 +573,9 @@ def test_listing_management_and_archived_product_rejection(client: TestClient, d
 
     assert client.get("/api/v1/listings").status_code == 401
 
-    seller_access, _body = register_user(client, email="listing-seller@example.com")
+    seller_access, _body = register_seller(client, email="listing-seller@example.com")
     seller_headers = {"Authorization": f"Bearer {seller_access}"}
-    other_access, _body = register_user(client, email="listing-other@example.com")
+    other_access, _body = register_seller(client, email="listing-other@example.com")
     other_headers = {"Authorization": f"Bearer {other_access}"}
 
     created = client.post(
@@ -585,7 +655,7 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
     product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
     assert product is not None
 
-    seller_access, _body = register_user(client, email="cart-seller@example.com")
+    seller_access, _body = register_seller(client, email="cart-seller@example.com")
     seller_headers = {"Authorization": f"Bearer {seller_access}"}
     listing = client.post(
         "/api/v1/listings",
@@ -680,3 +750,86 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
     removed = client.delete(f"/api/v1/cart/items/{item_id}", headers=buyer_headers)
     assert removed.status_code == 204
     assert client.get("/api/v1/cart", headers=buyer_headers).json() == {"items": [], "total_quantity": 0}
+
+
+def test_guest_cart_resolution_and_authenticated_merge(client: TestClient, db_session: Session) -> None:
+    product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
+    archived_product = db_session.scalar(select(Product).where(Product.slug == "supreme-test-hoodie"))
+    assert product is not None
+    assert archived_product is not None
+
+    seller_access, _body = register_seller(client, email="guest-cart-seller@example.com")
+    seller_headers = {"Authorization": f"Bearer {seller_access}"}
+    active = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(product.id), "price_cents": 24400, "currency": "USD"},
+        headers=seller_headers,
+    )
+    assert active.status_code == 201
+    active_id = active.json()["id"]
+
+    inactive = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(product.id), "price_cents": 24500, "currency": "USD"},
+        headers=seller_headers,
+    )
+    assert inactive.status_code == 201
+    inactive_id = inactive.json()["id"]
+    inactive_model = db_session.get(Listing, UUID(inactive_id))
+    assert inactive_model is not None
+    inactive_model.status = "sold"
+
+    archived = client.post(
+        "/api/v1/listings",
+        json={"product_id": str(archived_product.id), "price_cents": 5700, "currency": "USD"},
+        headers=seller_headers,
+    )
+    assert archived.status_code == 201
+    archived_id = archived.json()["id"]
+    archived_product.archived_at = datetime.now(UTC)
+    db_session.commit()
+
+    missing_id = str(uuid4())
+    invalid = client.post("/api/v1/cart/guest/resolve", json={"items": [{"listing_id": "not-a-uuid", "quantity": 1}]})
+    assert invalid.status_code == 422
+
+    resolved = client.post(
+        "/api/v1/cart/guest/resolve",
+        json={
+            "items": [
+                {"listing_id": active_id, "quantity": 2},
+                {"listing_id": inactive_id, "quantity": 1},
+                {"listing_id": archived_id, "quantity": 1},
+                {"listing_id": missing_id, "quantity": 1},
+            ]
+        },
+    )
+    assert resolved.status_code == 200
+    body = resolved.json()
+    assert body["items"][0]["available"] is True
+    assert body["items"][0]["listing"]["product"]["slug"] == "jordan-1-retro-high-test"
+    assert {item["reason"] for item in body["skipped"]} == {"listing_sold", "product_archived", "listing_not_found"}
+
+    buyer_access, _body = register_user(client, email="guest-cart-buyer@example.com")
+    buyer_headers = {"Authorization": f"Bearer {buyer_access}"}
+    existing = client.post("/api/v1/cart/items", json={"listing_id": active_id, "quantity": 2}, headers=buyer_headers)
+    assert existing.status_code == 201
+
+    assert client.post("/api/v1/cart/merge", json={"items": []}).status_code == 401
+    merged = client.post(
+        "/api/v1/cart/merge",
+        json={
+            "items": [
+                {"listing_id": active_id, "quantity": 3},
+                {"listing_id": inactive_id, "quantity": 1},
+                {"listing_id": missing_id, "quantity": 1},
+            ]
+        },
+        headers=buyer_headers,
+    )
+    assert merged.status_code == 200
+    merged_body = merged.json()
+    assert merged_body["cart"]["items"][0]["listing_id"] == active_id
+    assert merged_body["cart"]["items"][0]["quantity"] == 5
+    assert merged_body["cart"]["total_quantity"] == 5
+    assert {item["reason"] for item in merged_body["skipped"]} == {"listing_sold", "listing_not_found"}

@@ -2,7 +2,10 @@ import type {
   ApiErrorEnvelope,
   AuthResponse,
   Cart,
+  CartMergeResponse,
   Category,
+  GuestCartItemInput,
+  GuestCartRead,
   ListingCreatePayload,
   ListingPage,
   ListingRead,
@@ -10,6 +13,8 @@ import type {
   ProductDetail,
   ProductPage,
   RegisterPayload,
+  SellerProfile,
+  SellerProfilePayload,
   UserPublic,
   UUID,
   WatchlistItem
@@ -32,7 +37,7 @@ export class ApiError extends Error {
 }
 
 type RequestOptions = {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   accessToken?: string | null;
   credentials?: RequestCredentials;
@@ -125,6 +130,16 @@ export const api = {
       body: payload,
       accessToken
     }),
+  getSellerProfile: (accessToken: string) =>
+    apiRequest<SellerProfile>("/api/v1/seller/profile", {
+      accessToken
+    }),
+  upsertSellerProfile: (accessToken: string, payload: SellerProfilePayload) =>
+    apiRequest<SellerProfile>("/api/v1/seller/profile", {
+      method: "PUT",
+      body: payload,
+      accessToken
+    }),
   listWatchlist: (accessToken: string) =>
     apiRequest<WatchlistItem[]>("/api/v1/watchlist", {
       accessToken
@@ -142,6 +157,17 @@ export const api = {
     }),
   getCart: (accessToken: string) =>
     apiRequest<Cart>("/api/v1/cart", {
+      accessToken
+    }),
+  resolveGuestCart: (items: GuestCartItemInput[]) =>
+    apiRequest<GuestCartRead>("/api/v1/cart/guest/resolve", {
+      method: "POST",
+      body: { items }
+    }),
+  mergeGuestCart: (accessToken: string, items: GuestCartItemInput[]) =>
+    apiRequest<CartMergeResponse>("/api/v1/cart/merge", {
+      method: "POST",
+      body: { items },
       accessToken
     }),
   addCartItem: (accessToken: string, listingId: UUID, quantity = 1) =>

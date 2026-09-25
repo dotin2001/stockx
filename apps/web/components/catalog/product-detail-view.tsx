@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
+import { addGuestCartItem } from "@/lib/guest-cart";
 import type { ProductDetail } from "@/lib/types";
 
 export function ProductDetailView({ product }: { product: ProductDetail }) {
@@ -34,12 +35,17 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
   }
 
   async function addListingToCart(intent: "cart" | "buy") {
-    if (!accessToken) {
-      router.push("/login");
-      return;
-    }
     if (!activeListing) {
       setActionMessage("No active ask is available for this product yet.");
+      return;
+    }
+    if (status !== "authenticated" || !accessToken) {
+      addGuestCartItem(activeListing.id);
+      if (intent === "buy") {
+        router.push("/cart?checkout=1");
+        return;
+      }
+      setActionMessage("Added to your cart.");
       return;
     }
     setCarting(intent);
@@ -95,31 +101,31 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
           </div>
         ) : null}
         <div className="mt-8 grid gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => void addListingToCart("cart")}
+              disabled={!activeListing || carting !== null}
+              className="bg-market-green px-5 py-3 text-sm font-bold text-white hover:bg-ink-900 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {carting === "cart" ? "Adding..." : "Add to Cart"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void addListingToCart("buy")}
+              disabled={!activeListing || carting !== null}
+              className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {carting === "buy" ? "Starting..." : "Buy Now"}
+            </button>
+          </div>
+          {!activeListing ? (
+            <p className="border border-ink-200 bg-ink-50 px-3 py-2 text-sm font-semibold text-ink-600">
+              No active ask is available yet. You can still watch or sell this product.
+            </p>
+          ) : null}
           {status === "authenticated" ? (
             <>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => void addListingToCart("cart")}
-                  disabled={!activeListing || carting !== null}
-                  className="bg-market-green px-5 py-3 text-sm font-bold text-white hover:bg-ink-900 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {carting === "cart" ? "Adding..." : "Add to Cart"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void addListingToCart("buy")}
-                  disabled={!activeListing || carting !== null}
-                  className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {carting === "buy" ? "Starting..." : "Buy Now"}
-                </button>
-              </div>
-              {!activeListing ? (
-                <p className="border border-ink-200 bg-ink-50 px-3 py-2 text-sm font-semibold text-ink-600">
-                  No active ask is available yet. You can still watch or sell this product.
-                </p>
-              ) : null}
               <button type="button" onClick={addToWatchlist} disabled={watching} className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60">
                 {watching ? "Adding..." : "Add to Watchlist"}
               </button>
@@ -129,14 +135,6 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
             </>
           ) : (
             <>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Link href="/login" className="bg-market-green px-5 py-3 text-center text-sm font-bold text-white hover:bg-ink-900">
-                  Add to Cart
-                </Link>
-                <Link href="/login" className="bg-ink-900 px-5 py-3 text-center text-sm font-bold text-white hover:bg-market-green">
-                  Buy Now
-                </Link>
-              </div>
               <Link href="/login" className="border border-ink-900 px-5 py-3 text-center text-sm font-bold text-ink-900 hover:bg-ink-900 hover:text-white">
                 Log in to Watch or Sell
               </Link>

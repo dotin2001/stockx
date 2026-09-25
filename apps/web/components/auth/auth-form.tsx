@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
 import { ApiError } from "@/lib/api";
 
@@ -10,6 +10,7 @@ type Mode = "login" | "signup";
 
 export function AuthForm({ mode }: { mode: Mode }) {
   const router = useRouter();
+  const params = useSearchParams();
   const { login, signup } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -33,7 +34,8 @@ export function AuthForm({ mode }: { mode: Mode }) {
           password: String(form.get("password") ?? "")
         });
       }
-      router.push("/account");
+      const redirect = params.get("redirect");
+      router.push(redirect?.startsWith("/") ? redirect : "/account");
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Authentication failed.");
     } finally {
@@ -71,7 +73,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
       </button>
       <p className="text-sm text-ink-500">
         {isSignup ? "Already have an account? " : "Need an account? "}
-        <Link href={isSignup ? "/login" : "/signup"} className="font-bold text-ink-900 hover:text-market-green">
+        <Link href={`${isSignup ? "/login" : "/signup"}${params.get("redirect") ? `?redirect=${encodeURIComponent(params.get("redirect") ?? "")}` : ""}`} className="font-bold text-ink-900 hover:text-market-green">
           {isSignup ? "Log in" : "Sign up"}
         </Link>
       </p>

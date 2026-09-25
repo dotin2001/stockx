@@ -273,6 +273,41 @@ def smoke_protected_marketplace(client: httpx.Client, access_token: str, product
     assert_status(unauth_listing, 401, "Unauthenticated POST /api/v1/listings")
 
     headers = {"Authorization": f"Bearer {access_token}"}
+    non_seller_listing = request(
+        client,
+        "POST",
+        "/api/v1/listings",
+        json={"product_id": product_id, "price_cents": 25000, "currency": "USD"},
+        headers=headers,
+    )
+    assert_status(non_seller_listing, 403, "Non-seller POST /api/v1/listings")
+    require_error_code(response_json(non_seller_listing, "non-seller listing creation"), "seller_required", "Non-seller listing")
+
+    profile = request(
+        client,
+        "PUT",
+        "/api/v1/seller/profile",
+        json={
+            "phone_number": "+15555550123",
+            "address_line1": "123 Market Street",
+            "address_line2": "Suite 4",
+            "city": "San Francisco",
+            "state": "CA",
+            "postal_code": "94105",
+            "country": "US",
+        },
+        headers=headers,
+    )
+    assert_status(profile, 200, "PUT /api/v1/seller/profile")
+    profile_body = response_json(profile, "seller profile")
+    if not isinstance(profile_body, dict) or profile_body.get("phone_number") != "+15555550123":
+        fail("Seller profile response should include the saved phone number.")
+
+    current_user = request(client, "GET", "/api/v1/auth/me", headers=headers)
+    assert_status(current_user, 200, "GET /api/v1/auth/me after seller registration")
+    if response_json(current_user, "seller current user").get("is_seller") is not True:
+        fail("Current user should indicate seller eligibility after seller registration.")
+
     listing = request(
         client,
         "POST",
@@ -364,6 +399,19 @@ def smoke_cart(client: httpx.Client, access_token: str, listing_id: str) -> None
     unauth_cart = request(client, "GET", "/api/v1/cart")
     assert_status(unauth_cart, 401, "Unauthenticated GET /api/v1/cart")
 
+    guest_resolve = request(
+        client,
+        "POST",
+        "/api/v1/cart/guest/resolve",
+        json={"items": [{"listing_id": listing_id, "quantity": 2}]},
+    )
+    assert_status(guest_resolve, 200, "POST /api/v1/cart/guest/resolve")
+    guest_body = response_json(guest_resolve, "guest cart resolve")
+    if not isinstance(guest_body, dict) or not isinstance(guest_body.get("items"), list):
+        fail("Guest cart resolve response should include an items list.")
+    if guest_body["items"][0].get("available") is not True:
+        fail("Guest cart resolve should mark the active listing as available.")
+
     headers = {"Authorization": f"Bearer {access_token}"}
     empty = request(client, "GET", "/api/v1/cart", headers=headers)
     assert_status(empty, 200, "GET /api/v1/cart")
@@ -411,6 +459,25 @@ def smoke_cart(client: httpx.Client, access_token: str, listing_id: str) -> None
     if not isinstance(after_delete_body, dict):
         fail("Cart list response after delete should be an object.")
     assert_equal(after_delete_body.get("total_quantity"), 0, "Cart quantity should be zero after delete.")
+
+    unauth_merge = request(client, "POST", "/api/v1/cart/merge", json={"items": [{"listing_id": listing_id, "quantity": 1}]})
+    assert_status(unauth_merge, 401, "Unauthenticated POST /api/v1/cart/merge")
+
+    merged_guest = request(
+        client,
+        "POST",
+        "/api/v1/cart/merge",
+        json={"items": [{"listing_id": listing_id, "quantity": 2}]},
+        headers=headers,
+    )
+    assert_status(merged_guest, 200, "POST /api/v1/cart/merge")
+    merged_guest_body = response_json(merged_guest, "guest cart merge")
+    if not isinstance(merged_guest_body, dict):
+        fail("Guest cart merge response should be an object.")
+    merged_cart = merged_guest_body.get("cart")
+    if not isinstance(merged_cart, dict) or not isinstance(merged_cart.get("items"), list):
+        fail("Guest cart merge response should include a cart items list.")
+    assert_equal(merged_cart.get("total_quantity"), 2, "Merged guest cart quantity mismatch.")
 
 
 def smoke_admin_product_management(client: httpx.Client, product_id: str, seller_access_token: str, active_listing_id: str) -> None:

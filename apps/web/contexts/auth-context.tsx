@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
+import { clearGuestCart, getGuestCartItems, rememberCartMergeNotice } from "@/lib/guest-cart";
 import type { AuthResponse, LoginPayload, RegisterPayload, UserPublic } from "@/lib/types";
 
 type AuthStatus = "checking" | "guest" | "authenticated";
@@ -22,6 +23,22 @@ function applyAuthResponse(response: AuthResponse, setAccessToken: (token: strin
   setAccessToken(response.access_token);
   setUser(response.user);
   setStatus("authenticated");
+}
+
+async function mergeGuestCartAfterAuth(accessToken: string) {
+  const items = getGuestCartItems();
+  if (items.length === 0) {
+    return;
+  }
+  try {
+    const merged = await api.mergeGuestCart(accessToken, items);
+    clearGuestCart();
+    if (merged.skipped.length > 0) {
+      rememberCartMergeNotice(`${merged.skipped.length} unavailable cart item${merged.skipped.length === 1 ? "" : "s"} could not be moved into your account cart.`);
+    }
+  } catch {
+    rememberCartMergeNotice("Your guest cart could not be moved into your account yet. It is still saved on this device.");
+  }
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -48,11 +65,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(async (payload: LoginPayload) => {
     const response = await api.login(payload);
     applyAuthResponse(response, setAccessToken, setUser, setStatus);
+    await mergeGuestCartAfterAuth(response.access_token);
   }, []);
 
   const signup = useCallback(async (payload: RegisterPayload) => {
     const response = await api.register(payload);
     applyAuthResponse(response, setAccessToken, setUser, setStatus);
+    await mergeGuestCartAfterAuth(response.access_token);
   }, []);
 
   const logout = useCallback(async () => {

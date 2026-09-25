@@ -29,9 +29,19 @@ class User(TimestampMixin, Base):
         cascade="all, delete-orphan",
     )
     listings = relationship("Listing", back_populates="user", cascade="all, delete-orphan")
+    seller_profile = relationship(
+        "SellerProfile",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
     watchlist_items = relationship(
         "WatchlistItem",
         back_populates="user",
         cascade="all, delete-orphan",
     )
     cart_items = relationship("CartItem", back_populates="user", cascade="all, delete-orphan")
+
+    @property
+    def is_seller(self) -> bool:
+        return self.seller_profile is not None

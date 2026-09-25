@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
-import type { Cart, CartItem, ListingPage, WatchlistItem } from "@/lib/types";
+import { consumeCartMergeNotice } from "@/lib/guest-cart";
+import type { Cart, CartItem, ListingPage, SellerProfile, WatchlistItem } from "@/lib/types";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/states";
 
 function cartWithItems(items: CartItem[]): Cart {
@@ -23,12 +24,15 @@ export function AccountDashboard() {
   const [listings, setListings] = useState<ListingPage | null>(null);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [cart, setCart] = useState<Cart | null>(null);
+  const [sellerProfile, setSellerProfile] = useState<SellerProfile | null>(null);
   const [mutating, setMutating] = useState<string | null>(null);
   const [checkoutVisible, setCheckoutVisible] = useState(false);
+  const [mergeNotice, setMergeNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     setCheckoutVisible(params.get("checkout") === "1");
+    setMergeNotice(consumeCartMergeNotice());
   }, []);
 
   useEffect(() => {
@@ -37,12 +41,14 @@ export function AccountDashboard() {
     }
     let active = true;
     setLoading(true);
-    Promise.all([api.listMyListings(accessToken), api.listWatchlist(accessToken), api.getCart(accessToken)])
-      .then(([listingData, watchData, cartData]) => {
+    const sellerProfileRequest = user?.is_seller ? api.getSellerProfile(accessToken).catch(() => null) : Promise.resolve(null);
+    Promise.all([api.listMyListings(accessToken), api.listWatchlist(accessToken), api.getCart(accessToken), sellerProfileRequest])
+      .then(([listingData, watchData, cartData, profileData]) => {
         if (active) {
           setListings(listingData);
           setWatchlist(watchData);
           setCart(cartData);
+          setSellerProfile(profileData);
           setError(null);
         }
       })
@@ -59,7 +65,7 @@ export function AccountDashboard() {
     return () => {
       active = false;
     };
-  }, [accessToken]);
+  }, [accessToken, user?.is_seller]);
 
   async function updateCartQuantity(item: CartItem, quantity: number) {
     if (!accessToken || quantity < 1) {
@@ -133,7 +139,20 @@ export function AccountDashboard() {
         <p className="text-sm font-bold uppercase tracking-wide text-market-green">Account</p>
         <h1 className="mt-2 text-3xl font-black">{user?.name}</h1>
         <p className="mt-1 text-sm text-ink-500">{user?.email}</p>
+        <div className="mt-4 border-t border-ink-200 pt-4 text-sm text-ink-600">
+          <p className="font-bold text-ink-900">{user?.is_seller ? "Seller account active" : "Buyer account"}</p>
+          {sellerProfile ? (
+            <p className="mt-1">
+              Seller contact: {sellerProfile.phone_number} - {sellerProfile.city}, {sellerProfile.country}
+            </p>
+          ) : (
+            <p className="mt-1">Register as a seller before creating marketplace listings.</p>
+          )}
+        </div>
       </section>
+      {mergeNotice ? (
+        <p className="border border-market-green/30 bg-market-mint px-3 py-2 text-sm font-semibold text-ink-800">{mergeNotice}</p>
+      ) : null}
       {mutationError ? (
         <p className="border border-market-red/30 bg-red-50 px-3 py-2 text-sm font-semibold text-market-red">{mutationError}</p>
       ) : null}

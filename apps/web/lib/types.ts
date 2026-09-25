@@ -62,6 +62,7 @@ export type UserPublic = {
   name: string;
   email: string;
   is_admin: boolean;
+  is_seller: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -141,4 +142,58 @@ export type CartItem = {
 export type Cart = {
   items: CartItem[];
   total_quantity: number;
+};
+
+export type SellerProfile = {
+  id: UUID;
+  user_id: UUID;
+  phone_number: string;
+  address_line1: string;
+  address_line2: string | null;
+  city: string;
+  state: string | null;
+  postal_code: string | null;
+  country: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SellerProfilePayload = {
+  phone_number: string;
+  address_line1: string;
+  address_line2?: string | null;
+  city: string;
+  state?: string | null;
+  postal_code?: string | null;
+  country: string;
+};
+
+export type GuestCartItemInput = {
+  listing_id: UUID;
+  quantity: number;
+};
+
+export type GuestCartResolvedItem = {
+  listing_id: UUID;
+  quantity: number;
+  available: boolean;
+  unavailable_reason: string | null;
+  listing: CartListing | null;
+};
+
+export type GuestCartSkippedItem = {
+  listing_id: UUID;
+  quantity: number;
+  reason: string;
+};
+
+export type GuestCartRead = {
+  items: GuestCartResolvedItem[];
+  total_quantity: number;
+  skipped: GuestCartSkippedItem[];
+};
+
+export type CartMergeResponse = {
+  cart: Cart;
+  skipped: GuestCartSkippedItem[];
 };

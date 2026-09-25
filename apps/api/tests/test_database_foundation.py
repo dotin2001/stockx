@@ -14,6 +14,7 @@ def test_foundation_tables_are_declared() -> None:
         "listings",
         "watchlist_items",
         "cart_items",
+        "seller_profiles",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -69,6 +70,24 @@ def test_cart_items_are_user_listing_scoped_with_positive_quantity() -> None:
         if constraint.__class__.__name__ == "CheckConstraint"
     }
     assert "quantity > 0" in check_constraints
+
+
+def test_seller_profiles_are_user_scoped_contact_records() -> None:
+    seller_profiles = Base.metadata.tables["seller_profiles"]
+
+    assert {"user_id", "phone_number", "address_line1", "city", "country"}.issubset(seller_profiles.c.keys())
+    assert seller_profiles.c.user_id.nullable is False
+    assert seller_profiles.c.phone_number.nullable is False
+    assert seller_profiles.c.address_line1.nullable is False
+    assert seller_profiles.c.city.nullable is False
+    assert seller_profiles.c.country.nullable is False
+
+    unique_constraints = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in seller_profiles.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert ("user_id",) in unique_constraints
 
 
 def test_seed_data_has_stable_unique_slugs() -> None:
