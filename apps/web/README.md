@@ -52,7 +52,12 @@ pagination still come from the backend API.
 /signup
 /account
 /sell
+/admin/products/new
 ```
+
+`/admin/products/new` is visible to authenticated admins and creates catalog
+products through the backend admin API. Sellers continue to use `/sell` only for
+creating listings against existing products.
 
 Seeded route examples:
 

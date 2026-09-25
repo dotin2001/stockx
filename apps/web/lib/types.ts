@@ -57,6 +57,35 @@ export type ProductPage = {
   offset: number;
 };
 
+export type AdminProductRead = ProductDetail & {
+  archived_at: string | null;
+  archived_by_user_id: UUID | null;
+};
+
+export type AdminProductPage = {
+  items: AdminProductRead[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AdminProductCreatePayload = {
+  category_id: UUID;
+  name: string;
+  slug: string;
+  brand?: string | null;
+  description?: string | null;
+  image_url?: string | null;
+  lowest_ask_cents?: number | null;
+  total_sold?: number;
+};
+
+export type ProductVariantCreatePayload = {
+  size?: string | null;
+  color?: string | null;
+  sku?: string | null;
+};
+
 export type UserPublic = {
   id: UUID;
   name: string;

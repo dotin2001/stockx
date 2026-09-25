@@ -61,6 +61,11 @@ export function SiteHeader() {
           ))}
           {status === "authenticated" && user ? (
             <>
+              {user.is_admin ? (
+                <Link href="/admin/products/new" className="transition hover:text-market-green">
+                  Admin
+                </Link>
+              ) : null}
               <Link href="/account" className="transition hover:text-market-green">
                 Account
               </Link>
@@ -99,6 +104,11 @@ export function SiteHeader() {
             ))}
             {status === "authenticated" ? (
               <>
+                {user?.is_admin ? (
+                  <Link href="/admin/products/new" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
+                    Admin
+                  </Link>
+                ) : null}
                 <Link href="/account" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
                   Account
                 </Link>

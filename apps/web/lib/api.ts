@@ -1,5 +1,7 @@
 import type {
   ApiErrorEnvelope,
+  AdminProductCreatePayload,
+  AdminProductRead,
   AuthResponse,
   Cart,
   CartMergeResponse,
@@ -12,6 +14,8 @@ import type {
   LoginPayload,
   ProductDetail,
   ProductPage,
+  ProductVariant,
+  ProductVariantCreatePayload,
   RegisterPayload,
   SellerProfile,
   SellerProfilePayload,
@@ -185,6 +189,18 @@ export const api = {
   removeCartItem: (accessToken: string, itemId: UUID) =>
     apiRequest<void>(`/api/v1/cart/items/${itemId}`, {
       method: "DELETE",
+      accessToken
+    }),
+  createAdminProduct: (accessToken: string, payload: AdminProductCreatePayload) =>
+    apiRequest<AdminProductRead>("/api/v1/admin/products", {
+      method: "POST",
+      body: payload,
+      accessToken
+    }),
+  createAdminProductVariant: (accessToken: string, productId: UUID, payload: ProductVariantCreatePayload) =>
+    apiRequest<ProductVariant>(`/api/v1/admin/products/${productId}/variants`, {
+      method: "POST",
+      body: payload,
       accessToken
     })
 };
