@@ -1,6 +1,9 @@
 {
   "name": "stockx-marketplace",
   "private": true,
+  "bin": {
+    "lazy": "./bin/lazy.mjs"
+  },
   "engines": {
     "node": ">=18.18.0"
   },
@@ -8,6 +11,7 @@
     "apps/web"
   ],
   "scripts": {
+    "lazy:test": "node --test tests/lazy-cli.test.mjs",
     "web:dev": "npm run dev --workspace apps/web",
     "web:lint": "npm run lint --workspace apps/web",
     "web:build": "npm run build --workspace apps/web",
