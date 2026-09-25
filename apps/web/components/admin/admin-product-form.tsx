@@ -200,9 +200,9 @@ export function AdminProductForm() {
       <div className="surface mx-auto max-w-xl px-6 py-10 text-center">
         <p className="text-sm font-bold uppercase tracking-wide text-market-red">Admin required</p>
         <h1 className="mt-2 text-3xl font-black">Product creation is admin-only</h1>
-        <p className="mt-3 text-sm leading-6 text-ink-500">Sellers can create listings for existing products, but only admins can add catalog products.</p>
-        <Link href="/sell" className="mt-6 inline-flex border border-ink-900 px-5 py-3 text-sm font-bold text-ink-900 hover:bg-ink-900 hover:text-white">
-          Go to Sell
+        <p className="mt-3 text-sm leading-6 text-ink-500">Store catalog products are managed by admins. Customer accounts can browse, cart, watch, checkout, and message the store.</p>
+        <Link href="/account" className="mt-6 inline-flex border border-ink-900 px-5 py-3 text-sm font-bold text-ink-900 hover:bg-ink-900 hover:text-white">
+          Return to Account
         </Link>
       </div>
     );

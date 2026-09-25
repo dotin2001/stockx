@@ -1,6 +1,6 @@
 # StockX API
 
-This workspace contains the FastAPI backend for the marketplace. It exposes versioned API routes, email/password auth, public catalog/search endpoints, admin product management, protected listing/watchlist/cart actions, and the PostgreSQL database foundation.
+This workspace contains the FastAPI backend for the store-owned selling site. It exposes versioned API routes, email/password auth, public catalog/search endpoints, admin product management, protected customer watchlist/cart/message actions, admin-managed listings used as store inventory, and the PostgreSQL database foundation.
 
 ## Setup
 
@@ -80,12 +80,9 @@ GET    /api/v1/products/{slug}
 GET    /api/v1/search?q=...
 ```
 
-Protected marketplace actions:
+Protected customer actions:
 
 ```text
-GET    /api/v1/listings
-POST   /api/v1/listings
-POST   /api/v1/listings/{id}/cancel
 GET    /api/v1/watchlist
 POST   /api/v1/watchlist
 DELETE /api/v1/watchlist/{id}
@@ -93,13 +90,22 @@ GET    /api/v1/cart
 POST   /api/v1/cart/items
 PATCH  /api/v1/cart/items/{id}
 DELETE /api/v1/cart/items/{id}
+GET    /api/v1/messages
+POST   /api/v1/messages
+GET    /api/v1/messages/{id}
 ```
 
-Admin product management:
+Admin store management:
 
 ```text
+GET    /api/v1/listings
+POST   /api/v1/listings
+POST   /api/v1/listings/{id}/cancel
 GET    /api/v1/admin/listings
 POST   /api/v1/admin/listings/{id}/cancel
+GET    /api/v1/admin/messages
+GET    /api/v1/admin/messages/{id}
+POST   /api/v1/admin/messages/{id}/read
 GET    /api/v1/admin/products
 POST   /api/v1/admin/products
 PATCH  /api/v1/admin/products/{id}
@@ -136,6 +142,8 @@ stockx-api-admin promote admin@example.com
 
 The promotion command normalizes the email, requires the user to already exist,
 does not ask for or change passwords, and leaves refresh-token records intact.
+The current admin model is flat: `users.is_admin` represents a normal store
+admin. Supreme-admin roles and admin management are intentionally deferred.
 
 ## Verification
 
@@ -159,8 +167,8 @@ running API server.
 ## Running-Service API Smoke Test
 
 Use the smoke test when you want to verify the running FastAPI service,
-PostgreSQL-backed seed data, refresh cookies, auth flows, listing creation,
-seller listing management, watchlist/cart behavior, admin bootstrap, admin
+PostgreSQL-backed seed data, refresh cookies, auth flows, admin-created store
+listings, watchlist/cart behavior, customer messages, admin bootstrap, admin
 listing management, and admin archive/restore behavior through real HTTP
 requests.
 
@@ -205,12 +213,12 @@ The smoke test expects seeded categories `sneakers`, `streetwear`, and
 `collectibles`, plus the seeded Jordan product slug
 `jordan-1-retro-high-element-gore-tex-black-particle-grey`. It creates a unique
 `api-smoke-...@example.test` users on every run, so repeated runs do not fail
-because of previous user data. Listings, cart rows, and revoked refresh-token
-rows created by smoke runs may remain in the local database. The admin smoke
-promotes a temporary smoke user, temporarily archives the seeded product,
-verifies archived-product listing rejection, and restores the product before
-finishing. To reset local smoke data, use the optional rollback above and then
-re-run migrations and seed data.
+because of previous user data. Listings, messages, cart rows, and revoked
+refresh-token rows created by smoke runs may remain in the local database. The
+admin smoke promotes a temporary smoke user, temporarily archives the seeded
+product, verifies archived-product listing rejection, and restores the product
+before finishing. To reset local smoke data, use the optional rollback above and
+then re-run migrations and seed data.
 
 Common smoke-test failures:
 

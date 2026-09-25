@@ -15,6 +15,7 @@ def test_foundation_tables_are_declared() -> None:
         "watchlist_items",
         "cart_items",
         "seller_profiles",
+        "customer_admin_messages",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -88,6 +89,19 @@ def test_seller_profiles_are_user_scoped_contact_records() -> None:
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert ("user_id",) in unique_constraints
+
+
+def test_customer_admin_messages_are_sender_scoped_support_records() -> None:
+    messages = Base.metadata.tables["customer_admin_messages"]
+
+    assert {"sender_user_id", "subject", "body", "is_read", "read_at"}.issubset(messages.c.keys())
+    assert messages.c.sender_user_id.nullable is False
+    assert messages.c.subject.nullable is False
+    assert messages.c.body.nullable is False
+    assert messages.c.is_read.nullable is False
+    assert messages.c.read_at.nullable is True
+    assert isinstance(messages.c.is_read.type, Boolean)
+    assert isinstance(messages.c.read_at.type, DateTime)
 
 
 def test_seed_data_has_stable_unique_slugs() -> None:

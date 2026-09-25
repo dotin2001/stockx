@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
 import { consumeCartMergeNotice } from "@/lib/guest-cart";
-import type { Cart, CartItem, ListingPage, SellerProfile, WatchlistItem } from "@/lib/types";
+import type { Cart, CartItem, CustomerMessageRead, WatchlistItem } from "@/lib/types";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/states";
 
 function cartWithItems(items: CartItem[]): Cart {
@@ -21,13 +21,14 @@ export function AccountDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
-  const [listings, setListings] = useState<ListingPage | null>(null);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [cart, setCart] = useState<Cart | null>(null);
-  const [sellerProfile, setSellerProfile] = useState<SellerProfile | null>(null);
+  const [messages, setMessages] = useState<CustomerMessageRead[]>([]);
   const [mutating, setMutating] = useState<string | null>(null);
   const [checkoutVisible, setCheckoutVisible] = useState(false);
   const [mergeNotice, setMergeNotice] = useState<string | null>(null);
+  const [messageSuccess, setMessageSuccess] = useState<string | null>(null);
+  const [messageError, setMessageError] = useState<string | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -41,14 +42,12 @@ export function AccountDashboard() {
     }
     let active = true;
     setLoading(true);
-    const sellerProfileRequest = user?.is_seller ? api.getSellerProfile(accessToken).catch(() => null) : Promise.resolve(null);
-    Promise.all([api.listMyListings(accessToken), api.listWatchlist(accessToken), api.getCart(accessToken), sellerProfileRequest])
-      .then(([listingData, watchData, cartData, profileData]) => {
+    Promise.all([api.listWatchlist(accessToken), api.getCart(accessToken), api.listCustomerMessages(accessToken)])
+      .then(([watchData, cartData, messageData]) => {
         if (active) {
-          setListings(listingData);
           setWatchlist(watchData);
           setCart(cartData);
-          setSellerProfile(profileData);
+          setMessages(messageData.items);
           setError(null);
         }
       })
@@ -65,7 +64,7 @@ export function AccountDashboard() {
     return () => {
       active = false;
     };
-  }, [accessToken, user?.is_seller]);
+  }, [accessToken]);
 
   async function updateCartQuantity(item: CartItem, quantity: number) {
     if (!accessToken || quantity < 1) {
@@ -125,6 +124,31 @@ export function AccountDashboard() {
     }
   }
 
+  async function submitMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!accessToken) {
+      setMessageError("Login required.");
+      return;
+    }
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const subject = String(data.get("subject") ?? "");
+    const body = String(data.get("body") ?? "");
+    setMutating("message");
+    setMessageError(null);
+    setMessageSuccess(null);
+    try {
+      const created = await api.createCustomerMessage(accessToken, { subject, body });
+      setMessages((current) => [created, ...current]);
+      setMessageSuccess("Message sent to the store admin.");
+      form.reset();
+    } catch (caught) {
+      setMessageError(caught instanceof ApiError ? caught.message : "Could not send message.");
+    } finally {
+      setMutating(null);
+    }
+  }
+
   if (loading) {
     return <LoadingState label="Loading account..." />;
   }
@@ -140,14 +164,8 @@ export function AccountDashboard() {
         <h1 className="mt-2 text-3xl font-black">{user?.name}</h1>
         <p className="mt-1 text-sm text-ink-500">{user?.email}</p>
         <div className="mt-4 border-t border-ink-200 pt-4 text-sm text-ink-600">
-          <p className="font-bold text-ink-900">{user?.is_seller ? "Seller account active" : "Buyer account"}</p>
-          {sellerProfile ? (
-            <p className="mt-1">
-              Seller contact: {sellerProfile.phone_number} - {sellerProfile.city}, {sellerProfile.country}
-            </p>
-          ) : (
-            <p className="mt-1">Register as a seller before creating marketplace listings.</p>
-          )}
+          <p className="font-bold text-ink-900">{user?.is_admin ? "Store admin account" : "Customer account"}</p>
+          <p className="mt-1">Use this space to manage your watchlist, cart, checkout state, and messages to the store team.</p>
         </div>
       </section>
       {mergeNotice ? (
@@ -156,22 +174,7 @@ export function AccountDashboard() {
       {mutationError ? (
         <p className="border border-market-red/30 bg-red-50 px-3 py-2 text-sm font-semibold text-market-red">{mutationError}</p>
       ) : null}
-      <div className="grid gap-6 lg:grid-cols-3">
-        <section className="surface p-5">
-          <h2 className="text-lg font-black">Listings</h2>
-          {listings && listings.items.length > 0 ? (
-            <div className="mt-4 grid gap-3">
-              {listings.items.map((listing) => (
-                <Link key={listing.id} href={`/product/${listing.product.slug}`} className="border border-ink-200 p-3 text-sm hover:border-market-green">
-                  <strong>{listing.product.name}</strong>
-                  <span className="mt-1 block text-ink-500">{listing.status}</span>
-                </Link>
-              ))}
-            </div>
-          ) : (
-            <EmptyState title="No listings yet" message="Create a listing from the sell page." href="/sell" action="Sell an item" />
-          )}
-        </section>
+      <div className="grid gap-6 lg:grid-cols-2">
         <section className="surface p-5">
           <h2 className="text-lg font-black">Watchlist</h2>
           {watchlist.length > 0 ? (
@@ -261,10 +264,42 @@ export function AccountDashboard() {
               ) : null}
             </>
           ) : (
-            <EmptyState title="Cart is empty" message="Add active listings when sellers publish products." href="/category/sneakers" />
+            <EmptyState title="Cart is empty" message="Add active store products to your cart." href="/category/sneakers" />
           )}
         </section>
       </div>
+      <section className="surface grid gap-5 p-5">
+        <div>
+          <p className="text-sm font-bold uppercase tracking-wide text-market-green">Message Admin</p>
+          <h2 className="mt-2 text-lg font-black">Contact the store team</h2>
+        </div>
+        <form onSubmit={(event) => void submitMessage(event)} className="grid gap-4">
+          <label className="grid gap-2 text-sm font-semibold">
+            Subject
+            <input name="subject" required minLength={1} maxLength={160} className="border border-ink-200 px-3 py-3 font-normal" placeholder="Question about an item" />
+          </label>
+          <label className="grid gap-2 text-sm font-semibold">
+            Message
+            <textarea name="body" required minLength={1} maxLength={4000} rows={5} className="border border-ink-200 px-3 py-3 font-normal" placeholder="Tell the store admin what you need." />
+          </label>
+          {messageError ? <p className="border border-market-red/30 bg-red-50 px-3 py-2 text-sm font-semibold text-market-red">{messageError}</p> : null}
+          {messageSuccess ? <p className="border border-market-green/30 bg-market-mint px-3 py-2 text-sm font-semibold text-ink-800">{messageSuccess}</p> : null}
+          <button type="submit" disabled={mutating === "message"} className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60">
+            {mutating === "message" ? "Sending..." : "Send Message"}
+          </button>
+        </form>
+        {messages.length > 0 ? (
+          <div className="grid gap-3 border-t border-ink-200 pt-5">
+            <h3 className="text-sm font-bold uppercase tracking-wide">Recent Messages</h3>
+            {messages.slice(0, 3).map((message) => (
+              <div key={message.id} className="border border-ink-200 p-3 text-sm">
+                <strong>{message.subject}</strong>
+                <p className="mt-1 text-ink-500">{message.is_read ? "Read by admin" : "Sent to admin"}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }

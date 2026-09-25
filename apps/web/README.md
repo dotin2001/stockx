@@ -1,6 +1,6 @@
 # StockX Web
 
-Next.js, TypeScript, and Tailwind CSS frontend for the StockX-style marketplace.
+Next.js, TypeScript, and Tailwind CSS frontend for the StockX-style store.
 
 ## Setup
 
@@ -15,7 +15,7 @@ Use Node.js `>=18.18.0`; the Next.js build will fail on older Node 18
 releases.
 
 The frontend expects the FastAPI backend to be available for catalog, auth,
-listing, watchlist, and cart data. Start the backend and seed PostgreSQL using
+store inventory, watchlist, cart, and customer message data. Start the backend and seed PostgreSQL using
 the instructions in `apps/api/README.md`.
 
 ## Environment
@@ -35,7 +35,7 @@ CORS_ORIGINS=http://localhost:3000
 
 ## Data Contract Notes
 
-Catalog, search, product detail, account, sell, watchlist, and cart data flow
+Catalog, search, product detail, account, customer message, watchlist, and cart data flow
 through `apps/web/lib/api.ts` and typed DTOs in `apps/web/lib/types.ts`.
 Category navigation labels, hero images, and filter chips are curated frontend
 metadata for wayfinding; product records, prices, sold counts, variants, and
@@ -52,12 +52,15 @@ pagination still come from the backend API.
 /signup
 /account
 /sell
+/admin/messages
 /admin/products/new
 ```
 
 `/admin/products/new` is visible to authenticated admins and creates catalog
-products through the backend admin API. Sellers continue to use `/sell` only for
-creating listings against existing products.
+products through the backend admin API. `/admin/messages` is visible to admins
+for customer messages. `/sell` is intentionally informational: normal users are
+customers, while store admins manage catalog and sellable inventory. Supreme
+admin behavior is deferred to a later change.
 
 Seeded route examples:
 

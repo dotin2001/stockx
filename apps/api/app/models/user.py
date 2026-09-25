@@ -35,6 +35,11 @@ class User(TimestampMixin, Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    customer_admin_messages = relationship(
+        "CustomerAdminMessage",
+        back_populates="sender",
+        cascade="all, delete-orphan",
+    )
     watchlist_items = relationship(
         "WatchlistItem",
         back_populates="user",

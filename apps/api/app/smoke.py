@@ -263,7 +263,7 @@ def smoke_auth(client: httpx.Client, user: SmokeUser) -> tuple[str, str]:
     return marketplace_access_token, new_refresh
 
 
-def smoke_protected_marketplace(client: httpx.Client, access_token: str, product_id: str) -> str:
+def smoke_protected_marketplace(client: httpx.Client, access_token: str, product_id: str) -> None:
     unauth_listing = request(
         client,
         "POST",
@@ -273,15 +273,15 @@ def smoke_protected_marketplace(client: httpx.Client, access_token: str, product
     assert_status(unauth_listing, 401, "Unauthenticated POST /api/v1/listings")
 
     headers = {"Authorization": f"Bearer {access_token}"}
-    non_seller_listing = request(
+    customer_listing = request(
         client,
         "POST",
         "/api/v1/listings",
         json={"product_id": product_id, "price_cents": 25000, "currency": "USD"},
         headers=headers,
     )
-    assert_status(non_seller_listing, 403, "Non-seller POST /api/v1/listings")
-    require_error_code(response_json(non_seller_listing, "non-seller listing creation"), "seller_required", "Non-seller listing")
+    assert_status(customer_listing, 403, "Customer POST /api/v1/listings")
+    require_error_code(response_json(customer_listing, "customer listing creation"), "admin_required", "Customer listing")
 
     profile = request(
         client,
@@ -298,66 +298,13 @@ def smoke_protected_marketplace(client: httpx.Client, access_token: str, product
         },
         headers=headers,
     )
-    assert_status(profile, 200, "PUT /api/v1/seller/profile")
-    profile_body = response_json(profile, "seller profile")
-    if not isinstance(profile_body, dict) or profile_body.get("phone_number") != "+15555550123":
-        fail("Seller profile response should include the saved phone number.")
+    assert_status(profile, 410, "PUT /api/v1/seller/profile")
+    require_error_code(response_json(profile, "disabled seller profile"), "seller_flow_disabled", "Seller profile")
 
     current_user = request(client, "GET", "/api/v1/auth/me", headers=headers)
-    assert_status(current_user, 200, "GET /api/v1/auth/me after seller registration")
-    if response_json(current_user, "seller current user").get("is_seller") is not True:
-        fail("Current user should indicate seller eligibility after seller registration.")
-
-    listing = request(
-        client,
-        "POST",
-        "/api/v1/listings",
-        json={"product_id": product_id, "price_cents": 25000, "currency": "USD"},
-        headers=headers,
-    )
-    assert_status(listing, 201, "Authenticated POST /api/v1/listings")
-    listing_body = response_json(listing, "listing creation")
-    if not isinstance(listing_body, dict):
-        fail("Listing response should be an object.")
-    listing_id = listing_body.get("id")
-    if not isinstance(listing_id, str) or not listing_id:
-        fail("Listing creation should return a listing id.")
-    assert_equal(listing_body.get("product_id"), product_id, "Listing product mismatch.")
-    assert_equal(listing_body.get("status"), "active", "Listing status mismatch.")
-
-    seller_list = request(client, "GET", "/api/v1/listings", headers=headers)
-    assert_status(seller_list, 200, "GET /api/v1/listings")
-    seller_list_body = response_json(seller_list, "seller listing list")
-    if not isinstance(seller_list_body, dict) or not isinstance(seller_list_body.get("items"), list):
-        fail("Seller listing list response should include an items list.")
-    if not any(item.get("id") == listing_id for item in seller_list_body["items"] if isinstance(item, dict)):
-        fail("Created listing was not visible in the seller listing list.")
-
-    cancel_candidate = request(
-        client,
-        "POST",
-        "/api/v1/listings",
-        json={"product_id": product_id, "price_cents": 26000, "currency": "USD"},
-        headers=headers,
-    )
-    assert_status(cancel_candidate, 201, "POST /api/v1/listings for cancellation")
-    cancel_candidate_body = response_json(cancel_candidate, "listing cancellation candidate")
-    if not isinstance(cancel_candidate_body, dict):
-        fail("Cancellation candidate listing response should be an object.")
-    cancel_listing_id = cancel_candidate_body.get("id")
-    if not isinstance(cancel_listing_id, str) or not cancel_listing_id:
-        fail("Cancellation candidate should return a listing id.")
-
-    cancelled = request(client, "POST", f"/api/v1/listings/{cancel_listing_id}/cancel", headers=headers)
-    assert_status(cancelled, 200, "POST /api/v1/listings/{id}/cancel")
-    cancelled_body = response_json(cancelled, "seller listing cancel")
-    if not isinstance(cancelled_body, dict):
-        fail("Seller listing cancel response should be an object.")
-    assert_equal(cancelled_body.get("status"), "cancelled", "Seller listing cancel status mismatch.")
-
-    cancelled_again = request(client, "POST", f"/api/v1/listings/{cancel_listing_id}/cancel", headers=headers)
-    assert_status(cancelled_again, 200, "Repeated POST /api/v1/listings/{id}/cancel")
-    assert_equal(response_json(cancelled_again, "repeat seller listing cancel").get("status"), "cancelled", "Repeated cancel status mismatch.")
+    assert_status(current_user, 200, "GET /api/v1/auth/me after disabled seller flow")
+    if response_json(current_user, "customer current user").get("is_seller") is not False:
+        fail("Current user should remain a customer after disabled seller flow.")
 
     watched = request(client, "POST", "/api/v1/watchlist", json={"product_id": product_id}, headers=headers)
     assert_status(watched, 201, "POST /api/v1/watchlist")
@@ -392,7 +339,23 @@ def smoke_protected_marketplace(client: httpx.Client, access_token: str, product
     if any(item.get("id") == watchlist_item_id for item in after_delete_body if isinstance(item, dict)):
         fail("Deleted watchlist item is still visible.")
 
-    return listing_id
+    message = request(
+        client,
+        "POST",
+        "/api/v1/messages",
+        json={"subject": "Smoke question", "body": "Can the store admin help me?"},
+        headers=headers,
+    )
+    assert_status(message, 201, "POST /api/v1/messages")
+    message_body = response_json(message, "customer message")
+    if not isinstance(message_body, dict) or message_body.get("subject") != "Smoke question":
+        fail("Customer message response should include the saved subject.")
+
+    messages = request(client, "GET", "/api/v1/messages", headers=headers)
+    assert_status(messages, 200, "GET /api/v1/messages")
+    messages_body = response_json(messages, "customer message list")
+    if not isinstance(messages_body, dict) or messages_body.get("total", 0) < 1:
+        fail("Customer message list should include the sent message.")
 
 
 def smoke_cart(client: httpx.Client, access_token: str, listing_id: str) -> None:
@@ -480,12 +443,56 @@ def smoke_cart(client: httpx.Client, access_token: str, listing_id: str) -> None
     assert_equal(merged_cart.get("total_quantity"), 2, "Merged guest cart quantity mismatch.")
 
 
-def smoke_admin_product_management(client: httpx.Client, product_id: str, seller_access_token: str, active_listing_id: str) -> None:
+def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str:
     admin = unique_admin_user()
     admin_token, _refresh_token = smoke_auth(client, admin)
     promote_admin_user(admin.email)
     headers = {"Authorization": f"Bearer {admin_token}"}
-    seller_headers = {"Authorization": f"Bearer {seller_access_token}"}
+
+    active_listing = request(
+        client,
+        "POST",
+        "/api/v1/listings",
+        json={"product_id": product_id, "price_cents": 25000, "currency": "USD"},
+        headers=headers,
+    )
+    assert_status(active_listing, 201, "Admin POST /api/v1/listings")
+    active_listing_body = response_json(active_listing, "admin listing creation")
+    if not isinstance(active_listing_body, dict):
+        fail("Admin listing response should be an object.")
+    active_listing_id = active_listing_body.get("id")
+    if not isinstance(active_listing_id, str) or not active_listing_id:
+        fail("Admin listing creation should return a listing id.")
+
+    admin_owned_list = request(client, "GET", "/api/v1/listings", headers=headers)
+    assert_status(admin_owned_list, 200, "Admin GET /api/v1/listings")
+    admin_owned_body = response_json(admin_owned_list, "admin-owned listing list")
+    if not isinstance(admin_owned_body, dict) or not isinstance(admin_owned_body.get("items"), list):
+        fail("Admin-owned listing list response should include an items list.")
+    if not any(item.get("id") == active_listing_id for item in admin_owned_body["items"] if isinstance(item, dict)):
+        fail("Admin-created listing was not visible in the admin-owned listing list.")
+
+    cancel_candidate = request(
+        client,
+        "POST",
+        "/api/v1/listings",
+        json={"product_id": product_id, "price_cents": 26000, "currency": "USD"},
+        headers=headers,
+    )
+    assert_status(cancel_candidate, 201, "Admin POST /api/v1/listings for cancellation")
+    cancel_candidate_body = response_json(cancel_candidate, "admin listing cancellation candidate")
+    if not isinstance(cancel_candidate_body, dict):
+        fail("Cancellation candidate listing response should be an object.")
+    cancel_listing_id = cancel_candidate_body.get("id")
+    if not isinstance(cancel_listing_id, str) or not cancel_listing_id:
+        fail("Cancellation candidate should return a listing id.")
+
+    cancelled = request(client, "POST", f"/api/v1/listings/{cancel_listing_id}/cancel", headers=headers)
+    assert_status(cancelled, 200, "Admin POST /api/v1/listings/{id}/cancel")
+    cancelled_body = response_json(cancelled, "admin listing cancel")
+    if not isinstance(cancelled_body, dict):
+        fail("Admin listing cancel response should be an object.")
+    assert_equal(cancelled_body.get("status"), "cancelled", "Admin listing cancel status mismatch.")
 
     products = request(client, "GET", "/api/v1/admin/products", params={"limit": 20, "offset": 0}, headers=headers)
     assert_status(products, 200, "GET /api/v1/admin/products")
@@ -522,7 +529,7 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str, seller
             "POST",
             "/api/v1/listings",
             json={"product_id": product_id, "price_cents": 27000, "currency": "USD"},
-            headers=seller_headers,
+            headers=headers,
         )
         assert_status(archived_listing, 409, "POST /api/v1/listings for archived product")
         require_error_code(response_json(archived_listing, "archived product listing"), "product_archived", "Archived listing")
@@ -538,15 +545,17 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str, seller
     visible_detail = request(client, "GET", f"/api/v1/products/{SEEDED_PRODUCT_SLUG}")
     assert_status(visible_detail, 200, "GET restored product detail")
 
+    return active_listing_id
+
 
 def run_smoke(base_url: str, timeout: float) -> None:
     with httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout) as client:
         product_id = smoke_public_api(client)
         user = unique_user()
         access_token, _refresh_token = smoke_auth(client, user)
-        listing_id = smoke_protected_marketplace(client, access_token, product_id)
+        listing_id = smoke_admin_product_management(client, product_id)
+        smoke_protected_marketplace(client, access_token, product_id)
         smoke_cart(client, access_token, listing_id)
-        smoke_admin_product_management(client, product_id, access_token, listing_id)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

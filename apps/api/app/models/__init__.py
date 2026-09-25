@@ -1,5 +1,6 @@
 from app.models.cart import CartItem
 from app.models.category import Category
+from app.models.customer_message import CustomerAdminMessage
 from app.models.listing import Listing
 from app.models.product import Product, ProductVariant
 from app.models.refresh_token import RefreshToken
@@ -11,6 +12,7 @@ __all__ = [
     "Category",
     "CartItem",
     "Listing",
+    "CustomerAdminMessage",
     "Product",
     "ProductVariant",
     "RefreshToken",

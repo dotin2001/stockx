@@ -77,7 +77,7 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
       <aside className="surface p-6">
         <p className="text-sm font-bold uppercase tracking-wide text-market-green">{product.brand ?? product.category.name}</p>
         <h1 className="mt-3 text-3xl font-black leading-tight">{product.name}</h1>
-        <p className="mt-4 text-sm leading-6 text-ink-500">{product.description ?? "Verified marketplace product."}</p>
+        <p className="mt-4 text-sm leading-6 text-ink-500">{product.description ?? "Verified store product."}</p>
         <div className="mt-8 grid grid-cols-2 gap-3 border-y border-ink-200 py-5">
           <div>
             <p className="text-xs text-ink-500">Lowest Ask</p>
@@ -121,7 +121,7 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
           </div>
           {!activeListing ? (
             <p className="border border-ink-200 bg-ink-50 px-3 py-2 text-sm font-semibold text-ink-600">
-              No active ask is available yet. You can still watch or sell this product.
+              No active ask is available yet. Sign in to watch this product for updates.
             </p>
           ) : null}
           {status === "authenticated" ? (
@@ -129,14 +129,11 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
               <button type="button" onClick={addToWatchlist} disabled={watching} className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60">
                 {watching ? "Adding..." : "Add to Watchlist"}
               </button>
-              <Link href={`/sell?product=${product.slug}`} className="border border-ink-900 px-5 py-3 text-center text-sm font-bold text-ink-900 hover:bg-ink-900 hover:text-white">
-                Sell This Product
-              </Link>
             </>
           ) : (
             <>
               <Link href="/login" className="border border-ink-900 px-5 py-3 text-center text-sm font-bold text-ink-900 hover:bg-ink-900 hover:text-white">
-                Log in to Watch or Sell
+                Log in to Watch
               </Link>
             </>
           )}

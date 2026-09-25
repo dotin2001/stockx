@@ -152,7 +152,7 @@ export function CartPageClient() {
       </div>
 
       {!hasItems ? (
-        <EmptyState title="Cart is empty" message="Add active listings from product pages." href="/category/sneakers" action="Browse products" />
+        <EmptyState title="Cart is empty" message="Add active store products from product pages." href="/category/sneakers" action="Browse products" />
       ) : (
         <>
           <div className="grid gap-3">

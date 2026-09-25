@@ -6,6 +6,9 @@ import type {
   Cart,
   CartMergeResponse,
   Category,
+  CustomerMessageCreatePayload,
+  CustomerMessagePage,
+  CustomerMessageRead,
   GuestCartItemInput,
   GuestCartRead,
   ListingCreatePayload,
@@ -189,6 +192,25 @@ export const api = {
   removeCartItem: (accessToken: string, itemId: UUID) =>
     apiRequest<void>(`/api/v1/cart/items/${itemId}`, {
       method: "DELETE",
+      accessToken
+    }),
+  listCustomerMessages: (accessToken: string, limit = 20, offset = 0) =>
+    apiRequest<CustomerMessagePage>(`/api/v1/messages?limit=${limit}&offset=${offset}`, {
+      accessToken
+    }),
+  createCustomerMessage: (accessToken: string, payload: CustomerMessageCreatePayload) =>
+    apiRequest<CustomerMessageRead>("/api/v1/messages", {
+      method: "POST",
+      body: payload,
+      accessToken
+    }),
+  listAdminCustomerMessages: (accessToken: string, limit = 20, offset = 0) =>
+    apiRequest<CustomerMessagePage>(`/api/v1/admin/messages?limit=${limit}&offset=${offset}`, {
+      accessToken
+    }),
+  markAdminCustomerMessageRead: (accessToken: string, messageId: UUID) =>
+    apiRequest<CustomerMessageRead>(`/api/v1/admin/messages/${messageId}/read`, {
+      method: "POST",
       accessToken
     }),
   createAdminProduct: (accessToken: string, payload: AdminProductCreatePayload) =>

@@ -226,3 +226,28 @@ export type CartMergeResponse = {
   cart: Cart;
   skipped: GuestCartSkippedItem[];
 };
+
+export type CustomerMessageCreatePayload = {
+  subject: string;
+  body: string;
+};
+
+export type CustomerMessageRead = {
+  id: UUID;
+  sender_user_id: UUID;
+  sender_name: string;
+  sender_email: string;
+  subject: string;
+  body: string;
+  is_read: boolean;
+  read_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CustomerMessagePage = {
+  items: CustomerMessageRead[];
+  total: number;
+  limit: number;
+  offset: number;
+};

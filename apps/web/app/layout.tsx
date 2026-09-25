@@ -9,7 +9,7 @@ export const metadata: Metadata = {
     default: "StockX Marketplace",
     template: "%s | StockX Marketplace"
   },
-  description: "A StockX-style marketplace storefront powered by Next.js and FastAPI."
+  description: "A StockX-style store powered by Next.js and FastAPI."
 };
 
 export default function RootLayout({

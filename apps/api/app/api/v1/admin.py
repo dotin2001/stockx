@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Query, status
 
 from app.api.deps import CurrentAdminUser, DbSession
+from app.schemas.customer_message import CustomerMessagePage, CustomerMessageRead
 from app.schemas.listing import ListingManagementRead, ListingPage
 from app.schemas.product import (
     AdminProductPage,
@@ -14,9 +15,39 @@ from app.schemas.product import (
     ProductVariantUpdate,
 )
 from app.services import admin_products
+from app.services import customer_messages
 from app.services import listings as listing_service
 
 router = APIRouter()
+
+
+@router.get("/messages", response_model=CustomerMessagePage)
+def list_customer_messages(
+    db: DbSession,
+    _admin: CurrentAdminUser,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> CustomerMessagePage:
+    messages, total = customer_messages.list_admin_messages(db, limit=limit, offset=offset)
+    return CustomerMessagePage(
+        items=[customer_messages.serialize_message(message) for message in messages],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/messages/{message_id}", response_model=CustomerMessageRead)
+def get_customer_message(message_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> CustomerMessageRead:
+    message = customer_messages.get_admin_message(db, message_id=message_id)
+    return customer_messages.serialize_message(message)
+
+
+@router.post("/messages/{message_id}/read", response_model=CustomerMessageRead)
+def mark_customer_message_read(message_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> CustomerMessageRead:
+    message = customer_messages.mark_admin_message_read(db, message_id=message_id)
+    db.commit()
+    return customer_messages.serialize_message(message)
 
 
 @router.get("/listings", response_model=ListingPage)

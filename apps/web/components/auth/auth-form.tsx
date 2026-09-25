@@ -50,7 +50,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
       <div>
         <h1 className="text-3xl font-black">{isSignup ? "Create your account" : "Log in"}</h1>
         <p className="mt-2 text-sm text-ink-500">
-          {isSignup ? "Start watching products and creating listings." : "Restore your marketplace session."}
+          {isSignup ? "Start watching products, saving carts, and messaging the store." : "Restore your store account session."}
         </p>
       </div>
       {isSignup ? (

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import hash_password, verify_password
-from app.models import Category, Listing, Product, RefreshToken, SellerProfile, User, WatchlistItem
+from app.models import Category, CustomerAdminMessage, Listing, Product, RefreshToken, SellerProfile, User, WatchlistItem
 from app.schemas.product import ProductSummary
 from app.services import admin_products
 from app.services import auth as auth_service
@@ -41,14 +41,6 @@ def seller_profile_payload(**overrides) -> dict:
     return payload
 
 
-def register_seller(client: TestClient, email: str) -> tuple[str, dict]:
-    access_token, body = register_user(client, email=email)
-    headers = {"Authorization": f"Bearer {access_token}"}
-    profile = client.put("/api/v1/seller/profile", json=seller_profile_payload(), headers=headers)
-    assert profile.status_code == 200
-    return access_token, body
-
-
 def admin_headers(client: TestClient, db_session: Session, email: str = "admin@example.com") -> dict[str, str]:
     access_token, _body = register_user(client, email=email)
     user = db_session.scalar(select(User).where(User.email == email))
@@ -56,6 +48,27 @@ def admin_headers(client: TestClient, db_session: Session, email: str = "admin@e
     user.is_admin = True
     db_session.commit()
     return {"Authorization": f"Bearer {access_token}"}
+
+
+def create_store_listing(
+    db_session: Session,
+    product: Product,
+    *,
+    price_cents: int = 25000,
+    status: str = "active",
+    email: str | None = None,
+) -> Listing:
+    user = User(
+        name="Store Admin",
+        email=email or f"store-admin-{uuid4()}@example.com",
+        password_hash=hash_password("password123"),
+        is_admin=True,
+    )
+    listing = Listing(user=user, product=product, price_cents=price_cents, currency="USD", status=status)
+    db_session.add_all([user, listing])
+    db_session.commit()
+    db_session.refresh(listing)
+    return listing
 
 
 def test_health_and_versioned_catalog_route(client: TestClient) -> None:
@@ -211,11 +224,11 @@ def test_auth_register_login_me_refresh_and_logout(client: TestClient, db_sessio
     assert revoked_count >= 2
 
 
-def test_seller_profile_registration_and_auth_state(client: TestClient, db_session: Session) -> None:
+def test_seller_profile_flow_is_disabled_for_customers(client: TestClient, db_session: Session) -> None:
     assert client.get("/api/v1/seller/profile").status_code == 401
     assert client.put("/api/v1/seller/profile", json=seller_profile_payload()).status_code == 401
 
-    access_token, _body = register_user(client, email="profile-seller@example.com")
+    access_token, _body = register_user(client, email="profile-customer@example.com")
     headers = {"Authorization": f"Bearer {access_token}"}
 
     missing = client.put("/api/v1/seller/profile", json={"phone_number": "+15555550123"}, headers=headers)
@@ -225,25 +238,18 @@ def test_seller_profile_registration_and_auth_state(client: TestClient, db_sessi
     assert before.status_code == 404
     assert before.json()["error"]["code"] == "seller_profile_not_found"
 
-    created = client.put("/api/v1/seller/profile", json=seller_profile_payload(), headers=headers)
-    assert created.status_code == 200
-    assert created.json()["phone_number"] == "+15555550123"
-    assert created.json()["country"] == "US"
-    profile_id = created.json()["id"]
+    disabled = client.put("/api/v1/seller/profile", json=seller_profile_payload(), headers=headers)
+    assert disabled.status_code == 410
+    assert disabled.json()["error"]["code"] == "seller_flow_disabled"
 
     me = client.get("/api/v1/auth/me", headers=headers)
     assert me.status_code == 200
-    assert me.json()["is_seller"] is True
+    assert me.json()["is_seller"] is False
 
-    updated = client.put("/api/v1/seller/profile", json=seller_profile_payload(phone_number="+15555550999"), headers=headers)
-    assert updated.status_code == 200
-    assert updated.json()["id"] == profile_id
-    assert updated.json()["phone_number"] == "+15555550999"
-
-    user = db_session.scalar(select(User).where(User.email == "profile-seller@example.com"))
+    user = db_session.scalar(select(User).where(User.email == "profile-customer@example.com"))
     assert user is not None
     profiles = db_session.scalars(select(SellerProfile).where(SellerProfile.user_id == user.id)).all()
-    assert len(profiles) == 1
+    assert profiles == []
 
 
 def test_catalog_product_category_detail_and_search(client: TestClient) -> None:
@@ -443,25 +449,23 @@ def test_protected_listing_and_watchlist_flow(client: TestClient, db_session: Se
     unauth_listing = client.post("/api/v1/listings", json={"product_id": str(uuid4()), "price_cents": 1000})
     assert unauth_listing.status_code == 401
 
-    access_token, _body = register_user(client, email="seller@example.com")
+    access_token, _body = register_user(client, email="customer-listing@example.com")
     headers = {"Authorization": f"Bearer {access_token}"}
     product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
 
-    non_seller_listing = client.post(
+    customer_listing = client.post(
         "/api/v1/listings",
         json={"product_id": str(product.id), "price_cents": 25000, "currency": "USD"},
         headers=headers,
     )
-    assert non_seller_listing.status_code == 403
-    assert non_seller_listing.json()["error"]["code"] == "seller_required"
+    assert customer_listing.status_code == 403
+    assert customer_listing.json()["error"]["code"] == "admin_required"
 
-    profile = client.put("/api/v1/seller/profile", json=seller_profile_payload(), headers=headers)
-    assert profile.status_code == 200
-
+    admin_headers_value = admin_headers(client, db_session, email="store-listing-admin@example.com")
     listing = client.post(
         "/api/v1/listings",
         json={"product_id": str(product.id), "price_cents": 25000, "currency": "USD"},
-        headers=headers,
+        headers=admin_headers_value,
     )
     assert listing.status_code == 201
     assert listing.json()["status"] == "active"
@@ -469,14 +473,14 @@ def test_protected_listing_and_watchlist_flow(client: TestClient, db_session: Se
     missing_product = client.post(
         "/api/v1/listings",
         json={"product_id": str(uuid4()), "price_cents": 25000, "currency": "USD"},
-        headers=headers,
+        headers=admin_headers_value,
     )
     assert missing_product.status_code == 404
 
     invalid_price = client.post(
         "/api/v1/listings",
         json={"product_id": str(product.id), "price_cents": 0, "currency": "USD"},
-        headers=headers,
+        headers=admin_headers_value,
     )
     assert invalid_price.status_code == 422
 
@@ -507,44 +511,100 @@ def test_protected_listing_and_watchlist_flow(client: TestClient, db_session: Se
     assert db_session.get(WatchlistItem, UUID(watchlist_item_id)) is None
 
 
+def test_customer_admin_message_flow(client: TestClient, db_session: Session) -> None:
+    assert client.get("/api/v1/messages").status_code == 401
+    assert client.post("/api/v1/messages", json={"subject": "Hi", "body": "Help"}).status_code == 401
+    assert client.get("/api/v1/admin/messages").status_code == 401
+
+    customer_access, _body = register_user(client, email="message-customer@example.com")
+    customer_headers = {"Authorization": f"Bearer {customer_access}"}
+    other_access, _body = register_user(client, email="message-other@example.com")
+    other_headers = {"Authorization": f"Bearer {other_access}"}
+    admin_headers_value = admin_headers(client, db_session, email="message-admin@example.com")
+
+    invalid = client.post("/api/v1/messages", json={"subject": "   ", "body": "   "}, headers=customer_headers)
+    assert invalid.status_code == 422
+
+    created = client.post(
+        "/api/v1/messages",
+        json={"subject": "Order question", "body": "Can you help me choose a size?"},
+        headers=customer_headers,
+    )
+    assert created.status_code == 201
+    created_body = created.json()
+    message_id = created_body["id"]
+    assert created_body["sender_email"] == "message-customer@example.com"
+    assert created_body["subject"] == "Order question"
+    assert created_body["is_read"] is False
+    assert created_body["read_at"] is None
+
+    message_record = db_session.get(CustomerAdminMessage, UUID(message_id))
+    assert message_record is not None
+    assert message_record.body == "Can you help me choose a size?"
+
+    own_list = client.get("/api/v1/messages", headers=customer_headers)
+    assert own_list.status_code == 200
+    assert own_list.json()["total"] == 1
+    assert own_list.json()["items"][0]["id"] == message_id
+
+    own_detail = client.get(f"/api/v1/messages/{message_id}", headers=customer_headers)
+    assert own_detail.status_code == 200
+    assert own_detail.json()["id"] == message_id
+
+    other_detail = client.get(f"/api/v1/messages/{message_id}", headers=other_headers)
+    assert other_detail.status_code == 404
+
+    non_admin_list = client.get("/api/v1/admin/messages", headers=customer_headers)
+    assert non_admin_list.status_code == 403
+
+    admin_list = client.get("/api/v1/admin/messages", headers=admin_headers_value)
+    assert admin_list.status_code == 200
+    assert admin_list.json()["total"] == 1
+    assert admin_list.json()["items"][0]["id"] == message_id
+
+    admin_detail = client.get(f"/api/v1/admin/messages/{message_id}", headers=admin_headers_value)
+    assert admin_detail.status_code == 200
+    assert admin_detail.json()["body"] == "Can you help me choose a size?"
+
+    marked = client.post(f"/api/v1/admin/messages/{message_id}/read", headers=admin_headers_value)
+    assert marked.status_code == 200
+    assert marked.json()["is_read"] is True
+    assert marked.json()["read_at"] is not None
+
+    admin_cannot_send_customer_message = client.post(
+        "/api/v1/messages",
+        json={"subject": "Admin", "body": "Internal note"},
+        headers=admin_headers_value,
+    )
+    assert admin_cannot_send_customer_message.status_code == 403
+    assert admin_cannot_send_customer_message.json()["error"]["code"] == "customer_required"
+
+
 def test_product_detail_exposes_lowest_active_listing(client: TestClient, db_session: Session) -> None:
     product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
     archived_product = db_session.scalar(select(Product).where(Product.slug == "supreme-test-hoodie"))
     assert product is not None
     assert archived_product is not None
 
-    seller_access, _body = register_seller(client, email="detail-seller@example.com")
-    seller_headers = {"Authorization": f"Bearer {seller_access}"}
-
-    higher = client.post(
-        "/api/v1/listings",
-        json={"product_id": str(product.id), "price_cents": 26000, "currency": "USD"},
-        headers=seller_headers,
-    )
-    assert higher.status_code == 201
-    lower = client.post(
-        "/api/v1/listings",
-        json={"product_id": str(product.id), "price_cents": 24000, "currency": "USD"},
-        headers=seller_headers,
-    )
-    assert lower.status_code == 201
+    higher = create_store_listing(db_session, product, price_cents=26000)
+    lower = create_store_listing(db_session, product, price_cents=24000)
 
     detail = client.get("/api/v1/products/jordan-1-retro-high-test")
     assert detail.status_code == 200
-    assert detail.json()["lowest_active_listing"]["id"] == lower.json()["id"]
+    assert detail.json()["lowest_active_listing"]["id"] == str(lower.id)
     assert detail.json()["lowest_active_listing"]["price_cents"] == 24000
     assert detail.json()["lowest_active_listing"]["status"] == "active"
 
-    lower_model = db_session.get(Listing, UUID(lower.json()["id"]))
+    lower_model = db_session.get(Listing, lower.id)
     assert lower_model is not None
     lower_model.status = "sold"
     db_session.commit()
 
     detail_after_sold = client.get("/api/v1/products/jordan-1-retro-high-test")
     assert detail_after_sold.status_code == 200
-    assert detail_after_sold.json()["lowest_active_listing"]["id"] == higher.json()["id"]
+    assert detail_after_sold.json()["lowest_active_listing"]["id"] == str(higher.id)
 
-    higher_model = db_session.get(Listing, UUID(higher.json()["id"]))
+    higher_model = db_session.get(Listing, higher.id)
     assert higher_model is not None
     higher_model.status = "cancelled"
     db_session.commit()
@@ -553,12 +613,7 @@ def test_product_detail_exposes_lowest_active_listing(client: TestClient, db_ses
     assert detail_without_active.status_code == 200
     assert detail_without_active.json()["lowest_active_listing"] is None
 
-    archived_listing = client.post(
-        "/api/v1/listings",
-        json={"product_id": str(archived_product.id), "price_cents": 9000, "currency": "USD"},
-        headers=seller_headers,
-    )
-    assert archived_listing.status_code == 201
+    create_store_listing(db_session, archived_product, price_cents=9000)
     archived_product.archived_at = datetime.now(UTC)
     db_session.commit()
 
@@ -573,59 +628,50 @@ def test_listing_management_and_archived_product_rejection(client: TestClient, d
 
     assert client.get("/api/v1/listings").status_code == 401
 
-    seller_access, _body = register_seller(client, email="listing-seller@example.com")
-    seller_headers = {"Authorization": f"Bearer {seller_access}"}
-    other_access, _body = register_seller(client, email="listing-other@example.com")
-    other_headers = {"Authorization": f"Bearer {other_access}"}
+    customer_access, _body = register_user(client, email="listing-customer@example.com")
+    customer_headers = {"Authorization": f"Bearer {customer_access}"}
+    assert client.get("/api/v1/listings", headers=customer_headers).status_code == 403
 
+    admin_headers_value = admin_headers(client, db_session, email="listing-admin@example.com")
     created = client.post(
         "/api/v1/listings",
         json={"product_id": str(product.id), "price_cents": 25100, "currency": "USD"},
-        headers=seller_headers,
+        headers=admin_headers_value,
     )
     assert created.status_code == 201
     listing_id = created.json()["id"]
 
-    seller_list = client.get("/api/v1/listings", headers=seller_headers)
-    assert seller_list.status_code == 200
-    seller_body = seller_list.json()
-    assert seller_body["total"] == 1
-    assert seller_body["items"][0]["id"] == listing_id
-    assert seller_body["items"][0]["user_id"] == created.json()["user_id"]
-    assert seller_body["items"][0]["product"]["slug"] == "jordan-1-retro-high-test"
+    admin_owned_list = client.get("/api/v1/listings", headers=admin_headers_value)
+    assert admin_owned_list.status_code == 200
+    admin_owned_body = admin_owned_list.json()
+    assert admin_owned_body["total"] == 1
+    assert admin_owned_body["items"][0]["id"] == listing_id
+    assert admin_owned_body["items"][0]["user_id"] == created.json()["user_id"]
+    assert admin_owned_body["items"][0]["product"]["slug"] == "jordan-1-retro-high-test"
     assert {"id", "user_id", "product", "price_cents", "currency", "status", "created_at", "updated_at"}.issubset(
-        seller_body["items"][0].keys()
+        admin_owned_body["items"][0].keys()
     )
 
-    other_list = client.get("/api/v1/listings", headers=other_headers)
-    assert other_list.status_code == 200
-    assert other_list.json()["items"] == []
+    customer_cancel = client.post(f"/api/v1/listings/{listing_id}/cancel", headers=customer_headers)
+    assert customer_cancel.status_code == 403
 
-    cross_cancel = client.post(f"/api/v1/listings/{listing_id}/cancel", headers=other_headers)
-    assert cross_cancel.status_code == 404
-
-    own_cancel = client.post(f"/api/v1/listings/{listing_id}/cancel", headers=seller_headers)
-    assert own_cancel.status_code == 200
-    assert own_cancel.json()["status"] == "cancelled"
-
-    idempotent_cancel = client.post(f"/api/v1/listings/{listing_id}/cancel", headers=seller_headers)
+    idempotent_cancel = client.post(f"/api/v1/listings/{listing_id}/cancel", headers=admin_headers_value)
     assert idempotent_cancel.status_code == 200
     assert idempotent_cancel.json()["status"] == "cancelled"
 
-    missing_cancel = client.post(f"/api/v1/listings/{uuid4()}/cancel", headers=seller_headers)
+    missing_cancel = client.post(f"/api/v1/listings/{uuid4()}/cancel", headers=admin_headers_value)
     assert missing_cancel.status_code == 404
 
     active_for_admin = client.post(
         "/api/v1/listings",
         json={"product_id": str(product.id), "price_cents": 25200, "currency": "USD"},
-        headers=other_headers,
+        headers=admin_headers_value,
     )
     assert active_for_admin.status_code == 201
     active_listing_id = active_for_admin.json()["id"]
 
-    admin_headers_value = admin_headers(client, db_session, email="listing-admin@example.com")
     assert client.get("/api/v1/admin/listings").status_code == 401
-    non_admin = client.get("/api/v1/admin/listings", headers=seller_headers)
+    non_admin = client.get("/api/v1/admin/listings", headers=customer_headers)
     assert non_admin.status_code == 403
 
     admin_active_list = client.get("/api/v1/admin/listings?status=active", headers=admin_headers_value)
@@ -637,7 +683,7 @@ def test_listing_management_and_archived_product_rejection(client: TestClient, d
     assert admin_cancel.status_code == 200
     assert admin_cancel.json()["status"] == "cancelled"
 
-    non_admin_cancel = client.post(f"/api/v1/admin/listings/{listing_id}/cancel", headers=seller_headers)
+    non_admin_cancel = client.post(f"/api/v1/admin/listings/{listing_id}/cancel", headers=customer_headers)
     assert non_admin_cancel.status_code == 403
 
     archived_product.archived_at = datetime.now(UTC)
@@ -645,7 +691,7 @@ def test_listing_management_and_archived_product_rejection(client: TestClient, d
     archived_create = client.post(
         "/api/v1/listings",
         json={"product_id": str(archived_product.id), "price_cents": 10000, "currency": "USD"},
-        headers=seller_headers,
+        headers=admin_headers_value,
     )
     assert archived_create.status_code == 409
     assert archived_create.json()["error"]["code"] == "product_archived"
@@ -655,15 +701,8 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
     product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
     assert product is not None
 
-    seller_access, _body = register_seller(client, email="cart-seller@example.com")
-    seller_headers = {"Authorization": f"Bearer {seller_access}"}
-    listing = client.post(
-        "/api/v1/listings",
-        json={"product_id": str(product.id), "price_cents": 24400, "currency": "USD"},
-        headers=seller_headers,
-    )
-    assert listing.status_code == 201
-    listing_id = listing.json()["id"]
+    listing = create_store_listing(db_session, product, price_cents=24400)
+    listing_id = str(listing.id)
 
     assert client.get("/api/v1/cart").status_code == 401
     assert client.post("/api/v1/cart/items", json={"listing_id": listing_id}).status_code == 401
@@ -711,13 +750,9 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
 
     assert client.post("/api/v1/cart/items", json={"listing_id": str(uuid4())}, headers=buyer_headers).status_code == 404
 
-    inactive_listing = client.post(
-        "/api/v1/listings",
-        json={"product_id": str(product.id), "price_cents": 24500, "currency": "USD"},
-        headers=seller_headers,
-    )
-    inactive_listing_id = inactive_listing.json()["id"]
-    inactive_model = db_session.get(Listing, UUID(inactive_listing_id))
+    inactive_listing = create_store_listing(db_session, product, price_cents=24500)
+    inactive_listing_id = str(inactive_listing.id)
+    inactive_model = db_session.get(Listing, inactive_listing.id)
     assert inactive_model is not None
     inactive_model.status = "sold"
     db_session.commit()
@@ -726,7 +761,7 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
     assert inactive_add.status_code == 409
     assert inactive_add.json()["error"]["code"] == "listing_unavailable"
 
-    existing_listing = db_session.get(Listing, UUID(listing_id))
+    existing_listing = db_session.get(Listing, listing.id)
     assert existing_listing is not None
     existing_listing.status = "sold"
     db_session.commit()
@@ -758,34 +793,17 @@ def test_guest_cart_resolution_and_authenticated_merge(client: TestClient, db_se
     assert product is not None
     assert archived_product is not None
 
-    seller_access, _body = register_seller(client, email="guest-cart-seller@example.com")
-    seller_headers = {"Authorization": f"Bearer {seller_access}"}
-    active = client.post(
-        "/api/v1/listings",
-        json={"product_id": str(product.id), "price_cents": 24400, "currency": "USD"},
-        headers=seller_headers,
-    )
-    assert active.status_code == 201
-    active_id = active.json()["id"]
+    active = create_store_listing(db_session, product, price_cents=24400)
+    active_id = str(active.id)
 
-    inactive = client.post(
-        "/api/v1/listings",
-        json={"product_id": str(product.id), "price_cents": 24500, "currency": "USD"},
-        headers=seller_headers,
-    )
-    assert inactive.status_code == 201
-    inactive_id = inactive.json()["id"]
-    inactive_model = db_session.get(Listing, UUID(inactive_id))
+    inactive = create_store_listing(db_session, product, price_cents=24500)
+    inactive_id = str(inactive.id)
+    inactive_model = db_session.get(Listing, inactive.id)
     assert inactive_model is not None
     inactive_model.status = "sold"
 
-    archived = client.post(
-        "/api/v1/listings",
-        json={"product_id": str(archived_product.id), "price_cents": 5700, "currency": "USD"},
-        headers=seller_headers,
-    )
-    assert archived.status_code == 201
-    archived_id = archived.json()["id"]
+    archived = create_store_listing(db_session, archived_product, price_cents=5700)
+    archived_id = str(archived.id)
     archived_product.archived_at = datetime.now(UTC)
     db_session.commit()
 

@@ -17,8 +17,5 @@ def get_profile(current_user: CurrentUser, db: DbSession) -> SellerProfileRead:
 
 
 @router.put("/profile", response_model=SellerProfileRead)
-def upsert_profile(payload: SellerProfileUpsert, current_user: CurrentUser, db: DbSession) -> SellerProfileRead:
-    profile = seller_profile_service.upsert_seller_profile(db, user=current_user, payload=payload)
-    db.commit()
-    db.refresh(profile)
-    return SellerProfileRead.model_validate(profile)
+def upsert_profile(_payload: SellerProfileUpsert, _current_user: CurrentUser, _db: DbSession) -> SellerProfileRead:
+    raise APIError(status.HTTP_410_GONE, "seller_flow_disabled", "Selling is managed by the store admin.")

@@ -15,7 +15,7 @@ export function SearchPageClient({ query }: { query: string }) {
     <div className="page-shell grid gap-6 py-8">
       <div>
         <p className="text-sm font-bold uppercase tracking-wide text-market-green">Search</p>
-        <h1 className="mt-2 text-3xl font-black">{query ? `Results for "${query}"` : "Search the marketplace"}</h1>
+        <h1 className="mt-2 text-3xl font-black">{query ? `Results for "${query}"` : "Search the store"}</h1>
       </div>
       {!query ? (
         <EmptyState
