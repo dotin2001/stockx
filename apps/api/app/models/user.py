@@ -22,6 +22,12 @@ class User(TimestampMixin, Base):
         default=False,
         server_default=text("false"),
     )
+    is_supreme_admin: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
 
     refresh_tokens = relationship(
         "RefreshToken",

@@ -7,13 +7,16 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.errors import APIError
 from app.core.config import Settings
 from app.core.security import hash_password, verify_password
 from app.models import Category, CustomerAdminMessage, Listing, Product, RefreshToken, SellerProfile, User, WatchlistItem
+from app.schemas.admin_user import AdminUserRead
 from app.schemas.product import ProductSummary
+from app.services import admin_users
 from app.services import admin_products
 from app.services import auth as auth_service
-from app.services.admin_bootstrap import AdminPromotionError, promote_existing_user
+from app.services.admin_bootstrap import AdminPromotionError, grant_supreme_admin, promote_existing_user
 from app.services.integrity import matches_integrity_target
 
 
@@ -50,6 +53,16 @@ def admin_headers(client: TestClient, db_session: Session, email: str = "admin@e
     return {"Authorization": f"Bearer {access_token}"}
 
 
+def supreme_admin_headers(client: TestClient, db_session: Session, email: str = "supreme@example.com") -> dict[str, str]:
+    access_token, _body = register_user(client, email=email)
+    user = db_session.scalar(select(User).where(User.email == email))
+    assert user is not None
+    user.is_admin = True
+    user.is_supreme_admin = True
+    db_session.commit()
+    return {"Authorization": f"Bearer {access_token}"}
+
+
 def create_store_listing(
     db_session: Session,
     product: Product,
@@ -69,6 +82,11 @@ def create_store_listing(
     db_session.commit()
     db_session.refresh(listing)
     return listing
+
+
+def assert_public_user_roles(payload: dict, *, is_admin: bool, is_supreme_admin: bool) -> None:
+    assert payload["is_admin"] is is_admin
+    assert payload["is_supreme_admin"] is is_supreme_admin
 
 
 def test_health_and_versioned_catalog_route(client: TestClient) -> None:
@@ -129,6 +147,39 @@ def test_password_hashing_never_stores_raw_password(db_session: Session) -> None
     assert user.password_hash != "password123"
 
 
+def test_user_model_supports_customer_admin_and_supreme_admin(db_session: Session) -> None:
+    customer = User(name="Customer", email="customer-role@example.com", password_hash=hash_password("password123"))
+    normal_admin = User(
+        name="Normal Admin",
+        email="normal-admin-role@example.com",
+        password_hash=hash_password("password123"),
+        is_admin=True,
+    )
+    supreme_admin = User(
+        name="Supreme Admin",
+        email="supreme-admin-role@example.com",
+        password_hash=hash_password("password123"),
+        is_admin=True,
+        is_supreme_admin=True,
+    )
+
+    db_session.add_all([customer, normal_admin, supreme_admin])
+    db_session.commit()
+
+    saved_customer = db_session.scalar(select(User).where(User.email == "customer-role@example.com"))
+    saved_normal_admin = db_session.scalar(select(User).where(User.email == "normal-admin-role@example.com"))
+    saved_supreme_admin = db_session.scalar(select(User).where(User.email == "supreme-admin-role@example.com"))
+    assert saved_customer is not None
+    assert saved_normal_admin is not None
+    assert saved_supreme_admin is not None
+    assert saved_customer.is_admin is False
+    assert saved_customer.is_supreme_admin is False
+    assert saved_normal_admin.is_admin is True
+    assert saved_normal_admin.is_supreme_admin is False
+    assert saved_supreme_admin.is_admin is True
+    assert saved_supreme_admin.is_supreme_admin is True
+
+
 def test_admin_promotion_service_preserves_auth_data(db_session: Session) -> None:
     user = auth_service.register_user(
         db_session,
@@ -160,6 +211,119 @@ def test_admin_promotion_service_preserves_auth_data(db_session: Session) -> Non
         promote_existing_user(db_session, email="missing@example.com")
 
 
+def test_supreme_admin_grant_service_preserves_auth_data(db_session: Session) -> None:
+    user = auth_service.register_user(
+        db_session,
+        name="Supreme Me",
+        email="supreme-promote@example.com",
+        password="password123",
+    )
+    _record, _raw_token = auth_service.create_refresh_token_record(db_session, user)
+    password_hash = user.password_hash
+    refresh_token_ids = {token.id for token in user.refresh_tokens}
+
+    promoted = grant_supreme_admin(db_session, email="  SUPREME-PROMOTE@example.com ")
+    db_session.commit()
+
+    assert promoted.id == user.id
+    assert promoted.email == "supreme-promote@example.com"
+    assert promoted.is_admin is True
+    assert promoted.is_supreme_admin is True
+    assert promoted.password_hash == password_hash
+    assert {token.id for token in promoted.refresh_tokens} == refresh_token_ids
+
+    promoted_again = grant_supreme_admin(db_session, email="supreme-promote@example.com")
+    db_session.commit()
+    assert promoted_again.id == user.id
+    assert promoted_again.is_admin is True
+    assert promoted_again.is_supreme_admin is True
+    assert promoted_again.password_hash == password_hash
+
+    with pytest.raises(AdminPromotionError):
+        grant_supreme_admin(db_session, email="missing-supreme@example.com")
+
+
+def test_admin_user_schema_serialization_excludes_password(db_session: Session) -> None:
+    user = User(
+        name="Schema Admin",
+        email="schema-admin@example.com",
+        password_hash=hash_password("password123"),
+        is_admin=True,
+        is_supreme_admin=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+
+    serialized = AdminUserRead.model_validate(user).model_dump()
+
+    assert {
+        "id",
+        "name",
+        "email",
+        "is_admin",
+        "is_supreme_admin",
+        "created_at",
+        "updated_at",
+    }.issubset(serialized.keys())
+    assert "password_hash" not in serialized
+
+
+def test_admin_user_management_service_rules(db_session: Session) -> None:
+    supreme = User(
+        name="Supreme",
+        email="supreme-service@example.com",
+        password_hash=hash_password("password123"),
+        is_admin=True,
+        is_supreme_admin=True,
+    )
+    customer = User(name="Customer", email="customer-service@example.com", password_hash=hash_password("password123"))
+    normal_admin = User(
+        name="Normal",
+        email="normal-service@example.com",
+        password_hash=hash_password("password123"),
+        is_admin=True,
+    )
+    other_supreme = User(
+        name="Other Supreme",
+        email="other-supreme-service@example.com",
+        password_hash=hash_password("password123"),
+        is_admin=True,
+        is_supreme_admin=True,
+    )
+    db_session.add_all([supreme, customer, normal_admin, other_supreme])
+    db_session.commit()
+
+    promoted = admin_users.promote_user_by_email(db_session, email=" CUSTOMER-SERVICE@example.com ")
+    db_session.commit()
+    assert promoted.id == customer.id
+    assert promoted.is_admin is True
+    assert promoted.is_supreme_admin is False
+
+    promoted_again = admin_users.promote_user_by_id(db_session, user_id=normal_admin.id)
+    db_session.commit()
+    assert promoted_again.id == normal_admin.id
+    assert promoted_again.is_admin is True
+    assert promoted_again.is_supreme_admin is False
+
+    with pytest.raises(APIError) as missing:
+        admin_users.promote_user_by_email(db_session, email="missing-service@example.com")
+    assert missing.value.status_code == 404
+
+    with pytest.raises(APIError) as self_demote:
+        admin_users.demote_user(db_session, user_id=supreme.id, actor=supreme)
+    assert self_demote.value.code == "self_demotion_rejected"
+
+    with pytest.raises(APIError) as supreme_demote:
+        admin_users.demote_user(db_session, user_id=other_supreme.id, actor=supreme)
+    assert supreme_demote.value.code == "supreme_admin_protected"
+
+    demoted = admin_users.demote_user(db_session, user_id=normal_admin.id, actor=supreme)
+    db_session.commit()
+    assert demoted.is_admin is False
+    assert demoted.is_supreme_admin is False
+
+
 def test_schema_serialization_for_product_summary(db_session: Session) -> None:
     product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
 
@@ -176,6 +340,7 @@ def test_auth_register_login_me_refresh_and_logout(client: TestClient, db_sessio
     assert body["token_type"] == "bearer"
     assert body["user"]["email"] == "buyer@example.com"
     assert body["user"]["is_seller"] is False
+    assert_public_user_roles(body["user"], is_admin=False, is_supreme_admin=False)
     assert "stockx_refresh" in client.cookies
 
     user = db_session.scalar(select(User).where(User.email == "buyer@example.com"))
@@ -200,17 +365,20 @@ def test_auth_register_login_me_refresh_and_logout(client: TestClient, db_sessio
         json={"email": "buyer@example.com", "password": "password123"},
     )
     assert login.status_code == 200
+    assert_public_user_roles(login.json()["user"], is_admin=False, is_supreme_admin=False)
     assert "stockx_refresh" in client.cookies
 
     me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access_token}"})
     assert me.status_code == 200
     assert me.json()["email"] == "buyer@example.com"
     assert me.json()["is_seller"] is False
+    assert_public_user_roles(me.json(), is_admin=False, is_supreme_admin=False)
 
     old_refresh = client.cookies.get("stockx_refresh")
     refresh = client.post("/api/v1/auth/refresh")
     assert refresh.status_code == 200
     assert refresh.json()["access_token"] != access_token
+    assert_public_user_roles(refresh.json()["user"], is_admin=False, is_supreme_admin=False)
     assert client.cookies.get("stockx_refresh") != old_refresh
 
     replay = client.post("/api/v1/auth/refresh", cookies={"stockx_refresh": old_refresh})
@@ -354,6 +522,93 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
     assert restore.status_code == 200
     assert restore.json()["archived_at"] is None
     assert client.get("/api/v1/products/admin-updated-product").status_code == 200
+
+
+def test_supreme_admin_user_management_api(client: TestClient, db_session: Session) -> None:
+    customer_access, _body = register_user(client, email="managed-customer@example.com")
+    customer_headers = {"Authorization": f"Bearer {customer_access}"}
+    normal_headers = admin_headers(client, db_session, email="managed-normal@example.com")
+    supreme_headers = supreme_admin_headers(client, db_session, email="managed-supreme@example.com")
+
+    customer = db_session.scalar(select(User).where(User.email == "managed-customer@example.com"))
+    normal = db_session.scalar(select(User).where(User.email == "managed-normal@example.com"))
+    supreme = db_session.scalar(select(User).where(User.email == "managed-supreme@example.com"))
+    assert customer is not None
+    assert normal is not None
+    assert supreme is not None
+
+    anonymous = client.get("/api/v1/admin/users")
+    assert anonymous.status_code == 401
+
+    rejected_customer = client.post("/api/v1/admin/users/promote", json={"email": customer.email}, headers=customer_headers)
+    assert rejected_customer.status_code == 403
+    rejected_normal = client.post("/api/v1/admin/users/promote", json={"email": customer.email}, headers=normal_headers)
+    assert rejected_normal.status_code == 403
+    db_session.refresh(customer)
+    assert customer.is_admin is False
+
+    listed = client.get("/api/v1/admin/users?search=managed-&limit=10&offset=0", headers=supreme_headers)
+    assert listed.status_code == 200
+    list_body = listed.json()
+    assert list_body["total"] >= 3
+    assert {"id", "name", "email", "is_admin", "is_supreme_admin", "created_at", "updated_at"}.issubset(
+        list_body["items"][0].keys()
+    )
+    assert "password_hash" not in list_body["items"][0]
+
+    promoted_by_email = client.post(
+        "/api/v1/admin/users/promote",
+        json={"email": " MANAGED-CUSTOMER@example.com "},
+        headers=supreme_headers,
+    )
+    assert promoted_by_email.status_code == 200
+    assert promoted_by_email.json()["email"] == customer.email
+    assert_public_user_roles(promoted_by_email.json(), is_admin=True, is_supreme_admin=False)
+
+    promoted_by_id = client.post(f"/api/v1/admin/users/{normal.id}/promote", headers=supreme_headers)
+    assert promoted_by_id.status_code == 200
+    assert_public_user_roles(promoted_by_id.json(), is_admin=True, is_supreme_admin=False)
+
+    missing = client.post(f"/api/v1/admin/users/{uuid4()}/promote", headers=supreme_headers)
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "user_not_found"
+
+    demote_self = client.post(f"/api/v1/admin/users/{supreme.id}/demote", headers=supreme_headers)
+    assert demote_self.status_code == 409
+    assert demote_self.json()["error"]["code"] == "self_demotion_rejected"
+
+    demoted = client.post(f"/api/v1/admin/users/{normal.id}/demote", headers=supreme_headers)
+    assert demoted.status_code == 200
+    assert_public_user_roles(demoted.json(), is_admin=False, is_supreme_admin=False)
+
+    db_session.refresh(supreme)
+    assert supreme.is_admin is True
+    assert supreme.is_supreme_admin is True
+
+
+def test_supreme_admin_role_flow(client: TestClient, db_session: Session) -> None:
+    customer_access, _body = register_user(client, email="role-flow-customer@example.com")
+    supreme_headers = supreme_admin_headers(client, db_session, email="role-flow-supreme@example.com")
+    customer = db_session.scalar(select(User).where(User.email == "role-flow-customer@example.com"))
+    assert customer is not None
+
+    assert client.get("/api/v1/admin/products", headers={"Authorization": f"Bearer {customer_access}"}).status_code == 403
+
+    promoted = client.post(f"/api/v1/admin/users/{customer.id}/promote", headers=supreme_headers)
+    assert promoted.status_code == 200
+
+    normal_admin_headers = {"Authorization": f"Bearer {customer_access}"}
+    normal_admin_products = client.get("/api/v1/admin/products", headers=normal_admin_headers)
+    assert normal_admin_products.status_code == 200
+
+    normal_admin_users = client.get("/api/v1/admin/users", headers=normal_admin_headers)
+    assert normal_admin_users.status_code == 403
+
+    demoted = client.post(f"/api/v1/admin/users/{customer.id}/demote", headers=supreme_headers)
+    assert demoted.status_code == 200
+
+    removed_admin_products = client.get("/api/v1/admin/products", headers=normal_admin_headers)
+    assert removed_admin_products.status_code == 403
 
 
 def test_marketplace_integrity_conflicts_are_stable(client: TestClient, db_session: Session, monkeypatch) -> None:

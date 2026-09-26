@@ -2,7 +2,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, status
 
-from app.api.deps import CurrentAdminUser, DbSession
+from app.api.deps import CurrentAdminUser, CurrentSupremeAdminUser, DbSession
+from app.schemas.admin_user import AdminUserPage, AdminUserPromoteByEmail, AdminUserRead
 from app.schemas.customer_message import CustomerMessagePage, CustomerMessageRead
 from app.schemas.listing import ListingManagementRead, ListingPage
 from app.schemas.product import (
@@ -15,10 +16,53 @@ from app.schemas.product import (
     ProductVariantUpdate,
 )
 from app.services import admin_products
+from app.services import admin_users
 from app.services import customer_messages
 from app.services import listings as listing_service
 
 router = APIRouter()
+
+
+@router.get("/users", response_model=AdminUserPage)
+def list_users(
+    db: DbSession,
+    _admin: CurrentSupremeAdminUser,
+    search: str | None = Query(default=None, min_length=1, max_length=320),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> AdminUserPage:
+    users, total = admin_users.list_users(db, search=search, limit=limit, offset=offset)
+    return AdminUserPage(
+        items=[AdminUserRead.model_validate(user) for user in users],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/users/promote", response_model=AdminUserRead)
+def promote_user_by_email(
+    payload: AdminUserPromoteByEmail,
+    db: DbSession,
+    _admin: CurrentSupremeAdminUser,
+) -> AdminUserRead:
+    user = admin_users.promote_user_by_email(db, email=payload.email)
+    db.commit()
+    return AdminUserRead.model_validate(user)
+
+
+@router.post("/users/{user_id}/promote", response_model=AdminUserRead)
+def promote_user_by_id(user_id: UUID, db: DbSession, _admin: CurrentSupremeAdminUser) -> AdminUserRead:
+    user = admin_users.promote_user_by_id(db, user_id=user_id)
+    db.commit()
+    return AdminUserRead.model_validate(user)
+
+
+@router.post("/users/{user_id}/demote", response_model=AdminUserRead)
+def demote_user(user_id: UUID, db: DbSession, admin: CurrentSupremeAdminUser) -> AdminUserRead:
+    user = admin_users.demote_user(db, user_id=user_id, actor=admin)
+    db.commit()
+    return AdminUserRead.model_validate(user)
 
 
 @router.get("/messages", response_model=CustomerMessagePage)

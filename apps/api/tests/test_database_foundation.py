@@ -25,6 +25,9 @@ def test_users_have_boolean_admin_flag_and_no_text_access_level() -> None:
     assert "is_admin" in users.c
     assert isinstance(users.c.is_admin.type, Boolean)
     assert users.c.is_admin.nullable is False
+    assert "is_supreme_admin" in users.c
+    assert isinstance(users.c.is_supreme_admin.type, Boolean)
+    assert users.c.is_supreme_admin.nullable is False
     assert "role" not in users.c
     assert "access_level" not in users.c
 

@@ -20,7 +20,7 @@ Copy `apps/api/.env.example` to `apps/api/.env` for local overrides. Do not comm
 
 Initial tables:
 
-- `users`: account identity, unique email, password hash, `is_admin BOOLEAN NOT NULL DEFAULT FALSE`, timestamps.
+- `users`: account identity, unique email, password hash, `is_admin BOOLEAN NOT NULL DEFAULT FALSE`, `is_supreme_admin BOOLEAN NOT NULL DEFAULT FALSE`, timestamps.
 - `refresh_tokens`: hashed refresh tokens with expiration, revocation, and replacement linkage.
 - `categories`: unique category slugs.
 - `products`: required category ownership, unique product slugs, display fields, image URL, integer `lowest_ask_cents`, and sold count.
@@ -28,7 +28,7 @@ Initial tables:
 - `listings`: user-owned product listings with integer `price_cents`, currency, and status.
 - `watchlist_items`: unique `(user_id, product_id)` watch records.
 
-The foundation deliberately stores admin access as `is_admin` instead of a text access-level column. New users default to non-admin access.
+The foundation deliberately stores admin access as boolean flags instead of a text access-level column. New users default to customer access with both flags false. Normal admins use `is_admin`; supreme admins are operator-granted users with both `is_admin` and `is_supreme_admin` true.
 
 ## Migrations
 
@@ -54,4 +54,3 @@ Seed data is idempotent by slug and includes representative categories and produ
 - `collectibles`
 
 Run the seed command more than once to verify duplicate categories or products are not created.
-

@@ -69,6 +69,11 @@ export function SiteHeader() {
                   <Link href="/admin/messages" className="transition hover:text-market-green">
                     Messages
                   </Link>
+                  {user.is_supreme_admin ? (
+                    <Link href="/admin/users" className="transition hover:text-market-green">
+                      Users
+                    </Link>
+                  ) : null}
                 </>
               ) : null}
               <Link href="/account" className="transition hover:text-market-green">
@@ -114,6 +119,11 @@ export function SiteHeader() {
                     <Link href="/admin/messages" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
                       Messages
                     </Link>
+                    {user?.is_supreme_admin ? (
+                      <Link href="/admin/users" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
+                        Users
+                      </Link>
+                    ) : null}
                   </>
                 ) : null}
                 <Link href="/account" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">

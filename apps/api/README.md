@@ -95,7 +95,7 @@ POST   /api/v1/messages
 GET    /api/v1/messages/{id}
 ```
 
-Admin store management:
+Normal admin store management:
 
 ```text
 GET    /api/v1/listings
@@ -116,6 +116,15 @@ PATCH  /api/v1/admin/product-variants/{id}
 DELETE /api/v1/admin/product-variants/{id}
 ```
 
+Supreme-admin user management:
+
+```text
+GET    /api/v1/admin/users
+POST   /api/v1/admin/users/promote
+POST   /api/v1/admin/users/{id}/promote
+POST   /api/v1/admin/users/{id}/demote
+```
+
 Protected routes require an access token:
 
 ```text
@@ -127,7 +136,8 @@ Refresh tokens are stored in the `stockx_refresh` HTTP-only cookie by default an
 ## Admin Bootstrap
 
 Create a normal user through the API first, then promote that existing user from
-the backend environment:
+the backend environment. Normal admins can manage catalog products, store
+listings/inventory, and customer messages:
 
 ```bash
 cd apps/api
@@ -140,10 +150,26 @@ If the package is installed in editable mode, the console script is equivalent:
 stockx-api-admin promote admin@example.com
 ```
 
-The promotion command normalizes the email, requires the user to already exist,
-does not ask for or change passwords, and leaves refresh-token records intact.
-The current admin model is flat: `users.is_admin` represents a normal store
-admin. Supreme-admin roles and admin management are intentionally deferred.
+Supreme admins can also manage normal-admin access through
+`/api/v1/admin/users`. Grant supreme-admin status only from the backend
+environment:
+
+```bash
+cd apps/api
+python -m app.admin promote-supreme supreme@example.com
+```
+
+If the package is installed in editable mode, the console script is equivalent:
+
+```bash
+stockx-api-admin promote-supreme supreme@example.com
+```
+
+Both promotion commands normalize the email, require the user to already exist,
+do not ask for or change passwords, and leave refresh-token records intact.
+`promote-supreme` sets both `users.is_admin` and `users.is_supreme_admin`.
+In-app user management can promote or demote normal-admin access, but it cannot
+grant or remove supreme-admin status.
 
 ## Verification
 

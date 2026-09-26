@@ -9,6 +9,7 @@ class UserPublic(BaseModel):
     name: str
     email: str
     is_admin: bool
+    is_supreme_admin: bool
     is_seller: bool
     created_at: datetime
     updated_at: datetime

@@ -2,6 +2,9 @@ import type {
   ApiErrorEnvelope,
   AdminProductCreatePayload,
   AdminProductRead,
+  AdminUserPage,
+  AdminUserPromoteByEmailPayload,
+  AdminUserRead,
   AuthResponse,
   Cart,
   CartMergeResponse,
@@ -223,6 +226,29 @@ export const api = {
     apiRequest<ProductVariant>(`/api/v1/admin/products/${productId}/variants`, {
       method: "POST",
       body: payload,
+      accessToken
+    }),
+  listAdminUsers: (accessToken: string, search = "", limit = 20, offset = 0) => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset)
+    });
+    if (search.trim()) {
+      params.set("search", search.trim());
+    }
+    return apiRequest<AdminUserPage>(`/api/v1/admin/users?${params.toString()}`, {
+      accessToken
+    });
+  },
+  promoteAdminUser: (accessToken: string, payload: AdminUserPromoteByEmailPayload) =>
+    apiRequest<AdminUserRead>("/api/v1/admin/users/promote", {
+      method: "POST",
+      body: payload,
+      accessToken
+    }),
+  demoteAdminUser: (accessToken: string, userId: UUID) =>
+    apiRequest<AdminUserRead>(`/api/v1/admin/users/${userId}/demote`, {
+      method: "POST",
       accessToken
     })
 };

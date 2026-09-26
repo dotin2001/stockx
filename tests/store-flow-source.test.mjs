@@ -7,6 +7,7 @@ const accountSource = await readFile("apps/web/components/auth/account-dashboard
 const cartSource = await readFile("apps/web/components/cart/cart-page-client.tsx", "utf8");
 const sellPageSource = await readFile("apps/web/app/sell/page.tsx", "utf8");
 const adminMessagesSource = await readFile("apps/web/components/admin/admin-messages-panel.tsx", "utf8");
+const adminUsersSource = await readFile("apps/web/components/admin/admin-users-panel.tsx", "utf8");
 const headerSource = await readFile("apps/web/components/layout/site-header.tsx", "utf8");
 
 test("product detail keeps buyer actions and removes seller actions", () => {
@@ -44,4 +45,12 @@ test("admin messages are admin gated", () => {
   assert.match(adminMessagesSource, /Mark Read/);
   assert.match(headerSource, /\/admin\/messages/);
   assert.doesNotMatch(headerSource, />\\s*Sell\\s*</);
+});
+
+test("admin user management is supreme admin gated", () => {
+  assert.match(adminUsersSource, /Supreme admin required/);
+  assert.match(adminUsersSource, /api\.listAdminUsers/);
+  assert.match(adminUsersSource, /api\.promoteAdminUser/);
+  assert.match(adminUsersSource, /api\.demoteAdminUser/);
+  assert.match(headerSource, /user\.is_supreme_admin/);
 });

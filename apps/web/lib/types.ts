@@ -91,6 +91,7 @@ export type UserPublic = {
   name: string;
   email: string;
   is_admin: boolean;
+  is_supreme_admin: boolean;
   is_seller: boolean;
   created_at: string;
   updated_at: string;
@@ -100,6 +101,27 @@ export type AuthResponse = {
   access_token: string;
   token_type: "bearer";
   user: UserPublic;
+};
+
+export type AdminUserRead = {
+  id: UUID;
+  name: string;
+  email: string;
+  is_admin: boolean;
+  is_supreme_admin: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminUserPage = {
+  items: AdminUserRead[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AdminUserPromoteByEmailPayload = {
+  email: string;
 };
 
 export type RegisterPayload = {
