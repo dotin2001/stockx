@@ -63,7 +63,7 @@ export function SiteHeader() {
             <>
               {user.is_admin ? (
                 <>
-                  <Link href="/admin/products/new" className="transition hover:text-market-green">
+                  <Link href="/admin/products" className="transition hover:text-market-green">
                     Admin Products
                   </Link>
                   <Link href="/admin/messages" className="transition hover:text-market-green">
@@ -113,7 +113,7 @@ export function SiteHeader() {
               <>
                 {user?.is_admin ? (
                   <>
-                    <Link href="/admin/products/new" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
+                    <Link href="/admin/products" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
                       Admin Products
                     </Link>
                     <Link href="/admin/messages" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">

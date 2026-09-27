@@ -1,7 +1,10 @@
 import type {
   ApiErrorEnvelope,
+  AdminListingCreatePayload,
   AdminProductCreatePayload,
+  AdminProductPage,
   AdminProductRead,
+  AdminProductUpdatePayload,
   AdminUserPage,
   AdminUserPromoteByEmailPayload,
   AdminUserRead,
@@ -15,13 +18,17 @@ import type {
   GuestCartItemInput,
   GuestCartRead,
   ListingCreatePayload,
+  ListingManagementRead,
+  ListingQuantityAdjustmentPayload,
   ListingPage,
   ListingRead,
+  ListingStatusUpdatePayload,
   LoginPayload,
   ProductDetail,
   ProductPage,
   ProductVariant,
   ProductVariantCreatePayload,
+  ProductVariantUpdatePayload,
   RegisterPayload,
   SellerProfile,
   SellerProfilePayload,
@@ -222,9 +229,66 @@ export const api = {
       body: payload,
       accessToken
     }),
+  listAdminProducts: (accessToken: string, archived?: boolean, limit = 50, offset = 0) => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset)
+    });
+    if (archived !== undefined) {
+      params.set("archived", String(archived));
+    }
+    return apiRequest<AdminProductPage>(`/api/v1/admin/products?${params.toString()}`, {
+      accessToken
+    });
+  },
+  updateAdminProduct: (accessToken: string, productId: UUID, payload: AdminProductUpdatePayload) =>
+    apiRequest<AdminProductRead>(`/api/v1/admin/products/${productId}`, {
+      method: "PATCH",
+      body: payload,
+      accessToken
+    }),
+  archiveAdminProduct: (accessToken: string, productId: UUID) =>
+    apiRequest<AdminProductRead>(`/api/v1/admin/products/${productId}/archive`, {
+      method: "POST",
+      accessToken
+    }),
+  restoreAdminProduct: (accessToken: string, productId: UUID) =>
+    apiRequest<AdminProductRead>(`/api/v1/admin/products/${productId}/restore`, {
+      method: "POST",
+      accessToken
+    }),
+  createAdminProductListing: (accessToken: string, productId: UUID, payload: AdminListingCreatePayload) =>
+    apiRequest<ListingManagementRead>(`/api/v1/admin/products/${productId}/listings`, {
+      method: "POST",
+      body: payload,
+      accessToken
+    }),
   createAdminProductVariant: (accessToken: string, productId: UUID, payload: ProductVariantCreatePayload) =>
     apiRequest<ProductVariant>(`/api/v1/admin/products/${productId}/variants`, {
       method: "POST",
+      body: payload,
+      accessToken
+    }),
+  updateAdminProductVariant: (accessToken: string, variantId: UUID, payload: ProductVariantUpdatePayload) =>
+    apiRequest<ProductVariant>(`/api/v1/admin/product-variants/${variantId}`, {
+      method: "PATCH",
+      body: payload,
+      accessToken
+    }),
+  deleteAdminProductVariant: (accessToken: string, variantId: UUID) =>
+    apiRequest<void>(`/api/v1/admin/product-variants/${variantId}`, {
+      method: "DELETE",
+      accessToken
+    }),
+  adjustAdminListingQuantity: (accessToken: string, listingId: UUID, payload: ListingQuantityAdjustmentPayload) =>
+    apiRequest<ListingManagementRead>(`/api/v1/admin/listings/${listingId}/inventory/quantity`, {
+      method: "POST",
+      body: payload,
+      accessToken
+    }),
+  updateAdminListingStatus: (accessToken: string, listingId: UUID, payload: ListingStatusUpdatePayload) =>
+    apiRequest<ListingManagementRead>(`/api/v1/admin/listings/${listingId}/inventory/status`, {
+      method: "PATCH",
       body: payload,
       accessToken
     }),

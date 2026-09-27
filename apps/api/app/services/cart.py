@@ -42,15 +42,32 @@ def _availability_reason(listing: Listing) -> str | None:
         return "product_archived"
     if listing.status != "active":
         return f"listing_{listing.status}"
+    if listing.available_quantity <= 0:
+        return "inventory_unavailable"
     return None
 
 
-def _require_listing_available(listing: Listing) -> None:
+def _availability_reason_for_quantity(listing: Listing, quantity: int) -> str | None:
+    unavailable_reason = _availability_reason(listing)
+    if unavailable_reason is not None:
+        return unavailable_reason
+    if quantity > listing.available_quantity:
+        return "quantity_limited"
+    return None
+
+
+def _require_listing_available(listing: Listing, *, quantity: int) -> None:
     unavailable_reason = _availability_reason(listing)
     if unavailable_reason == "product_archived":
         raise APIError(status.HTTP_409_CONFLICT, "product_archived", "Product is no longer available.")
     if unavailable_reason is not None:
         raise APIError(status.HTTP_409_CONFLICT, "listing_unavailable", "Listing is no longer available.")
+    if quantity > listing.available_quantity:
+        raise APIError(
+            status.HTTP_409_CONFLICT,
+            "quantity_exceeds_availability",
+            "Requested quantity exceeds available inventory.",
+        )
 
 
 def _load_user_cart_item(db: Session, *, user: User, item_id: UUID) -> CartItem:
@@ -67,7 +84,6 @@ def list_cart_items(db: Session, *, user: User) -> list[CartItem]:
 def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -> CartItem:
     user_id = user.id
     listing = _load_listing(db, listing_id)
-    _require_listing_available(listing)
 
     item = db.scalar(
         select(CartItem)
@@ -76,9 +92,11 @@ def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -
         .execution_options(populate_existing=True)
     )
     if item is None:
+        _require_listing_available(listing, quantity=quantity)
         item = CartItem(user_id=user.id, listing_id=listing.id, quantity=quantity)
         db.add(item)
     else:
+        _require_listing_available(listing, quantity=item.quantity + quantity)
         item.quantity += quantity
 
     try:
@@ -95,6 +113,7 @@ def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -
         )
         if item is None:
             raise APIError(status.HTTP_409_CONFLICT, "cart_item_duplicate", "Cart item already exists.") from exc
+        _require_listing_available(listing, quantity=item.quantity + quantity)
         item.quantity += quantity
         db.flush()
     return _load_user_cart_item(db, user=user, item_id=item.id)
@@ -102,6 +121,7 @@ def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -
 
 def update_cart_item(db: Session, *, user: User, item_id: UUID, quantity: int) -> CartItem:
     item = _load_user_cart_item(db, user=user, item_id=item_id)
+    _require_listing_available(item.listing, quantity=quantity)
     item.quantity = quantity
     db.flush()
     return _load_user_cart_item(db, user=user, item_id=item.id)
@@ -123,7 +143,7 @@ def resolve_guest_cart_items(db: Session, *, items: list[tuple[UUID, int]]) -> t
             skipped.append(GuestCartSkippedItem(listing_id=listing_id, quantity=quantity, reason=reason))
             continue
 
-        reason = _availability_reason(listing)
+        reason = _availability_reason_for_quantity(listing, quantity)
         resolved.append(
             GuestCartItemRead(
                 listing_id=listing.id,
@@ -146,7 +166,7 @@ def merge_guest_cart_items(db: Session, *, user: User, items: list[tuple[UUID, i
             skipped.append(GuestCartSkippedItem(listing_id=listing_id, quantity=quantity, reason="listing_not_found"))
             continue
 
-        reason = _availability_reason(listing)
+        reason = _availability_reason_for_quantity(listing, quantity)
         if reason is not None:
             skipped.append(GuestCartSkippedItem(listing_id=listing.id, quantity=quantity, reason=reason))
             continue
@@ -157,7 +177,7 @@ def merge_guest_cart_items(db: Session, *, user: User, items: list[tuple[UUID, i
 
 def serialize_cart_item(item: CartItem) -> CartItemRead:
     listing = item.listing
-    unavailable_reason = _availability_reason(listing)
+    unavailable_reason = _availability_reason_for_quantity(listing, item.quantity)
 
     return CartItemRead(
         id=item.id,

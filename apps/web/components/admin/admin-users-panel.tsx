@@ -134,7 +134,7 @@ export function AdminUsersPanel() {
           <h1 className="mt-2 text-3xl font-black">User management</h1>
           <p className="mt-2 text-sm leading-6 text-ink-500">Promote customers to normal admin or demote normal admins back to customer access.</p>
         </div>
-        <Link href="/admin/products/new" className="border border-ink-300 px-4 py-2 text-sm font-bold text-ink-900 hover:border-market-green hover:text-market-green">
+        <Link href="/admin/products" className="border border-ink-300 px-4 py-2 text-sm font-bold text-ink-900 hover:border-market-green hover:text-market-green">
           Admin Products
         </Link>
       </div>

@@ -13,6 +13,7 @@ class Listing(TimestampMixin, Base):
     __tablename__ = "listings"
     __table_args__ = (
         CheckConstraint("price_cents >= 0", name="price_cents_non_negative"),
+        CheckConstraint("available_quantity >= 0", name="available_quantity_non_negative"),
         CheckConstraint("status IN ('active', 'sold', 'cancelled')", name="status_known"),
     )
 
@@ -33,6 +34,7 @@ class Listing(TimestampMixin, Base):
         index=True,
     )
     price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    available_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD", server_default="USD")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
 

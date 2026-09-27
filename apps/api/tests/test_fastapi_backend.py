@@ -10,12 +10,13 @@ from sqlalchemy.orm import Session
 from app.api.errors import APIError
 from app.core.config import Settings
 from app.core.security import hash_password, verify_password
-from app.models import Category, CustomerAdminMessage, Listing, Product, RefreshToken, SellerProfile, User, WatchlistItem
+from app.models import Category, CustomerAdminMessage, Listing, Product, ProductVariant, RefreshToken, SellerProfile, User, WatchlistItem
 from app.schemas.admin_user import AdminUserRead
 from app.schemas.product import ProductSummary
 from app.services import admin_users
 from app.services import admin_products
 from app.services import auth as auth_service
+from app.services import listings as listing_service
 from app.services.admin_bootstrap import AdminPromotionError, grant_supreme_admin, promote_existing_user
 from app.services.integrity import matches_integrity_target
 
@@ -69,6 +70,7 @@ def create_store_listing(
     *,
     price_cents: int = 25000,
     status: str = "active",
+    available_quantity: int = 10,
     email: str | None = None,
 ) -> Listing:
     user = User(
@@ -77,7 +79,14 @@ def create_store_listing(
         password_hash=hash_password("password123"),
         is_admin=True,
     )
-    listing = Listing(user=user, product=product, price_cents=price_cents, currency="USD", status=status)
+    listing = Listing(
+        user=user,
+        product=product,
+        price_cents=price_cents,
+        available_quantity=available_quantity,
+        currency="USD",
+        status=status,
+    )
     db_session.add_all([user, listing])
     db_session.commit()
     db_session.refresh(listing)
@@ -328,10 +337,13 @@ def test_schema_serialization_for_product_summary(db_session: Session) -> None:
     product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
 
     summary = ProductSummary.model_validate(product)
+    dumped = summary.model_dump()
 
     assert summary.slug == "jordan-1-retro-high-test"
     assert summary.category.slug == "sneakers"
     assert summary.lowest_ask_cents == 24300
+    assert "available_quantity" not in dumped
+    assert "inventory_summary" not in dumped
 
 
 def test_auth_register_login_me_refresh_and_logout(client: TestClient, db_session: Session) -> None:
@@ -487,7 +499,14 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
 
     managed = client.get("/api/v1/admin/products", headers=headers)
     assert managed.status_code == 200
-    assert any(item["id"] == product_id for item in managed.json()["items"])
+    managed_product = next(item for item in managed.json()["items"] if item["id"] == product_id)
+    assert managed_product["inventory_summary"] == {
+        "total_listings": 0,
+        "active_listings": 0,
+        "total_available_quantity": 0,
+        "lowest_active_price_cents": None,
+    }
+    assert managed_product["inventory_items"] == []
 
     updated = client.patch(
         f"/api/v1/admin/products/{product_id}",
@@ -590,7 +609,9 @@ def test_supreme_admin_role_flow(client: TestClient, db_session: Session) -> Non
     customer_access, _body = register_user(client, email="role-flow-customer@example.com")
     supreme_headers = supreme_admin_headers(client, db_session, email="role-flow-supreme@example.com")
     customer = db_session.scalar(select(User).where(User.email == "role-flow-customer@example.com"))
+    product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
     assert customer is not None
+    assert product is not None
 
     assert client.get("/api/v1/admin/products", headers={"Authorization": f"Bearer {customer_access}"}).status_code == 403
 
@@ -603,6 +624,48 @@ def test_supreme_admin_role_flow(client: TestClient, db_session: Session) -> Non
 
     normal_admin_users = client.get("/api/v1/admin/users", headers=normal_admin_headers)
     assert normal_admin_users.status_code == 403
+
+    listing = create_store_listing(db_session, product, price_cents=24400, available_quantity=2)
+    listing_id = str(listing.id)
+    normal_quantity_mutation = client.post(
+        f"/api/v1/admin/listings/{listing_id}/inventory/quantity",
+        json={"adjustment": -1},
+        headers=normal_admin_headers,
+    )
+    assert normal_quantity_mutation.status_code == 403
+    db_session.refresh(listing)
+    assert listing.available_quantity == 2
+
+    buyer_access, _buyer_body = register_user(client, email="role-flow-buyer@example.com")
+    buyer_headers = {"Authorization": f"Bearer {buyer_access}"}
+    carted = client.post("/api/v1/cart/items", json={"listing_id": listing_id, "quantity": 2}, headers=buyer_headers)
+    assert carted.status_code == 201
+    detail_before_inventory_change = client.get("/api/v1/products/jordan-1-retro-high-test")
+    assert detail_before_inventory_change.status_code == 200
+    assert detail_before_inventory_change.json()["lowest_active_listing"]["id"] == listing_id
+
+    zeroed = client.post(
+        f"/api/v1/admin/listings/{listing_id}/inventory/quantity",
+        json={"adjustment": -2},
+        headers=supreme_headers,
+    )
+    assert zeroed.status_code == 200
+    assert zeroed.json()["available_quantity"] == 0
+    detail_after_quantity_change = client.get("/api/v1/products/jordan-1-retro-high-test")
+    assert detail_after_quantity_change.status_code == 200
+    assert detail_after_quantity_change.json()["lowest_active_listing"] is None
+    cart_after_quantity_change = client.get("/api/v1/cart", headers=buyer_headers)
+    assert cart_after_quantity_change.status_code == 200
+    assert cart_after_quantity_change.json()["items"][0]["available"] is False
+    assert cart_after_quantity_change.json()["items"][0]["unavailable_reason"] == "inventory_unavailable"
+
+    sold = client.patch(
+        f"/api/v1/admin/listings/{listing_id}/inventory/status",
+        json={"status": "sold"},
+        headers=supreme_headers,
+    )
+    assert sold.status_code == 200
+    assert sold.json()["status"] == "sold"
 
     demoted = client.post(f"/api/v1/admin/users/{customer.id}/demote", headers=supreme_headers)
     assert demoted.status_code == 200
@@ -848,16 +911,17 @@ def test_product_detail_exposes_lowest_active_listing(client: TestClient, db_ses
     assert detail.status_code == 200
     assert detail.json()["lowest_active_listing"]["id"] == str(lower.id)
     assert detail.json()["lowest_active_listing"]["price_cents"] == 24000
+    assert detail.json()["lowest_active_listing"]["available_quantity"] == 10
     assert detail.json()["lowest_active_listing"]["status"] == "active"
 
     lower_model = db_session.get(Listing, lower.id)
     assert lower_model is not None
-    lower_model.status = "sold"
+    lower_model.available_quantity = 0
     db_session.commit()
 
-    detail_after_sold = client.get("/api/v1/products/jordan-1-retro-high-test")
-    assert detail_after_sold.status_code == 200
-    assert detail_after_sold.json()["lowest_active_listing"]["id"] == str(higher.id)
+    detail_after_zero_quantity = client.get("/api/v1/products/jordan-1-retro-high-test")
+    assert detail_after_zero_quantity.status_code == 200
+    assert detail_after_zero_quantity.json()["lowest_active_listing"]["id"] == str(higher.id)
 
     higher_model = db_session.get(Listing, higher.id)
     assert higher_model is not None
@@ -924,6 +988,7 @@ def test_listing_management_and_archived_product_rejection(client: TestClient, d
     )
     assert active_for_admin.status_code == 201
     active_listing_id = active_for_admin.json()["id"]
+    assert active_for_admin.json()["available_quantity"] == 1
 
     assert client.get("/api/v1/admin/listings").status_code == 401
     non_admin = client.get("/api/v1/admin/listings", headers=customer_headers)
@@ -933,6 +998,7 @@ def test_listing_management_and_archived_product_rejection(client: TestClient, d
     assert admin_active_list.status_code == 200
     assert any(item["id"] == active_listing_id for item in admin_active_list.json()["items"])
     assert all(item["status"] == "active" for item in admin_active_list.json()["items"])
+    assert all("available_quantity" in item for item in admin_active_list.json()["items"])
 
     admin_cancel = client.post(f"/api/v1/admin/listings/{active_listing_id}/cancel", headers=admin_headers_value)
     assert admin_cancel.status_code == 200
@@ -950,6 +1016,426 @@ def test_listing_management_and_archived_product_rejection(client: TestClient, d
     )
     assert archived_create.status_code == 409
     assert archived_create.json()["error"]["code"] == "product_archived"
+
+
+def test_supreme_admin_inventory_service_rules(db_session: Session) -> None:
+    product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
+    assert product is not None
+    variant = db_session.scalar(select(ProductVariant).where(ProductVariant.product_id == product.id))
+    assert variant is not None
+    archived_product = db_session.scalar(select(Product).where(Product.slug == "supreme-test-hoodie"))
+    assert archived_product is not None
+
+    supreme = User(
+        name="Supreme Inventory",
+        email="supreme-inventory-service@example.com",
+        password_hash=hash_password("password123"),
+        is_admin=True,
+        is_supreme_admin=True,
+    )
+    normal_admin = User(
+        name="Normal Inventory",
+        email="normal-inventory-service@example.com",
+        password_hash=hash_password("password123"),
+        is_admin=True,
+    )
+    customer = User(
+        name="Customer Inventory",
+        email="customer-inventory-service@example.com",
+        password_hash=hash_password("password123"),
+    )
+    listing = Listing(user=supreme, product=product, price_cents=24400, available_quantity=2, currency="USD")
+    db_session.add_all([supreme, normal_admin, customer, listing])
+    db_session.commit()
+
+    created = listing_service.create_managed_listing(
+        db_session,
+        actor=supreme,
+        product_id=product.id,
+        product_variant_id=variant.id,
+        price_cents=25500,
+        currency="usd",
+        available_quantity=4,
+        listing_status="active",
+    )
+    assert created.user_id == supreme.id
+    assert created.product_id == product.id
+    assert created.product_variant_id == variant.id
+    assert created.price_cents == 25500
+    assert created.currency == "USD"
+    assert created.available_quantity == 4
+    assert created.status == "active"
+
+    for actor in (normal_admin, customer):
+        with pytest.raises(APIError) as rejected:
+            listing_service.create_managed_listing(
+                db_session,
+                actor=actor,
+                product_id=product.id,
+                product_variant_id=None,
+                price_cents=25500,
+                currency="USD",
+                available_quantity=1,
+                listing_status="active",
+            )
+        assert rejected.value.code == "supreme_admin_required"
+
+    with pytest.raises(APIError) as missing_product:
+        listing_service.create_managed_listing(
+            db_session,
+            actor=supreme,
+            product_id=uuid4(),
+            product_variant_id=None,
+            price_cents=25500,
+            currency="USD",
+            available_quantity=1,
+            listing_status="active",
+        )
+    assert missing_product.value.code == "product_not_found"
+
+    archived_product.archived_at = datetime.now(UTC)
+    db_session.commit()
+    with pytest.raises(APIError) as archived:
+        listing_service.create_managed_listing(
+            db_session,
+            actor=supreme,
+            product_id=archived_product.id,
+            product_variant_id=None,
+            price_cents=25500,
+            currency="USD",
+            available_quantity=1,
+            listing_status="active",
+        )
+    assert archived.value.code == "product_archived"
+
+    with pytest.raises(APIError) as missing_variant:
+        listing_service.create_managed_listing(
+            db_session,
+            actor=supreme,
+            product_id=product.id,
+            product_variant_id=uuid4(),
+            price_cents=25500,
+            currency="USD",
+            available_quantity=1,
+            listing_status="active",
+        )
+    assert missing_variant.value.code == "variant_not_found"
+
+    with pytest.raises(APIError) as invalid_quantity:
+        listing_service.create_managed_listing(
+            db_session,
+            actor=supreme,
+            product_id=product.id,
+            product_variant_id=None,
+            price_cents=25500,
+            currency="USD",
+            available_quantity=-1,
+            listing_status="active",
+        )
+    assert invalid_quantity.value.code == "invalid_available_quantity"
+
+    with pytest.raises(APIError) as invalid_status:
+        listing_service.create_managed_listing(
+            db_session,
+            actor=supreme,
+            product_id=product.id,
+            product_variant_id=None,
+            price_cents=25500,
+            currency="USD",
+            available_quantity=1,
+            listing_status="draft",
+        )
+    assert invalid_status.value.code == "invalid_listing_status"
+
+    increased = listing_service.adjust_managed_listing_quantity(db_session, listing_id=listing.id, adjustment=3, actor=supreme)
+    assert increased.available_quantity == 5
+    decreased = listing_service.adjust_managed_listing_quantity(db_session, listing_id=listing.id, adjustment=-2, actor=supreme)
+    assert decreased.available_quantity == 3
+
+    with pytest.raises(APIError) as below_zero:
+        listing_service.adjust_managed_listing_quantity(db_session, listing_id=listing.id, adjustment=-4, actor=supreme)
+    assert below_zero.value.code == "inventory_quantity_below_zero"
+    assert db_session.get(Listing, listing.id).available_quantity == 3
+
+    with pytest.raises(APIError) as invalid_adjustment:
+        listing_service.adjust_managed_listing_quantity(db_session, listing_id=listing.id, adjustment=0, actor=supreme)
+    assert invalid_adjustment.value.code == "invalid_quantity_adjustment"
+
+    with pytest.raises(APIError) as missing_quantity:
+        listing_service.adjust_managed_listing_quantity(db_session, listing_id=uuid4(), adjustment=1, actor=supreme)
+    assert missing_quantity.value.code == "listing_not_found"
+
+    for actor in (normal_admin, customer):
+        with pytest.raises(APIError) as rejected:
+            listing_service.adjust_managed_listing_quantity(db_session, listing_id=listing.id, adjustment=1, actor=actor)
+        assert rejected.value.code == "supreme_admin_required"
+
+    sold = listing_service.change_managed_listing_status(db_session, listing_id=listing.id, next_status="sold", actor=supreme)
+    assert sold.status == "sold"
+    cancelled = listing_service.change_managed_listing_status(db_session, listing_id=listing.id, next_status="cancelled", actor=supreme)
+    assert cancelled.status == "cancelled"
+    active = listing_service.change_managed_listing_status(db_session, listing_id=listing.id, next_status="active", actor=supreme)
+    assert active.status == "active"
+
+    with pytest.raises(APIError) as missing_status:
+        listing_service.change_managed_listing_status(db_session, listing_id=uuid4(), next_status="sold", actor=supreme)
+    assert missing_status.value.code == "listing_not_found"
+
+    for actor in (normal_admin, customer):
+        with pytest.raises(APIError) as rejected:
+            listing_service.change_managed_listing_status(db_session, listing_id=listing.id, next_status="sold", actor=actor)
+        assert rejected.value.code == "supreme_admin_required"
+
+
+def test_supreme_admin_product_listing_creation_api(client: TestClient, db_session: Session) -> None:
+    product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
+    other_product = db_session.scalar(select(Product).where(Product.slug == "supreme-test-hoodie"))
+    assert product is not None
+    assert other_product is not None
+    variant = db_session.scalar(select(ProductVariant).where(ProductVariant.product_id == product.id))
+    assert variant is not None
+    other_variant = ProductVariant(product=other_product, size="M", color="Black", sku="HOODIE-M")
+    db_session.add(other_variant)
+    db_session.commit()
+
+    customer_access, _body = register_user(client, email="create-listing-customer@example.com")
+    customer_headers = {"Authorization": f"Bearer {customer_access}"}
+    normal_headers = admin_headers(client, db_session, email="create-listing-normal@example.com")
+    supreme_headers = supreme_admin_headers(client, db_session, email="create-listing-supreme@example.com")
+
+    payload = {
+        "product_variant_id": str(variant.id),
+        "price_cents": 23000,
+        "currency": "usd",
+        "available_quantity": 3,
+        "status": "active",
+    }
+
+    anonymous = client.post(f"/api/v1/admin/products/{product.id}/listings", json=payload)
+    assert anonymous.status_code == 401
+    customer = client.post(f"/api/v1/admin/products/{product.id}/listings", json=payload, headers=customer_headers)
+    assert customer.status_code == 403
+    normal = client.post(f"/api/v1/admin/products/{product.id}/listings", json=payload, headers=normal_headers)
+    assert normal.status_code == 403
+
+    invalid_price = client.post(
+        f"/api/v1/admin/products/{product.id}/listings",
+        json={**payload, "price_cents": 0},
+        headers=supreme_headers,
+    )
+    assert invalid_price.status_code == 422
+    invalid_quantity = client.post(
+        f"/api/v1/admin/products/{product.id}/listings",
+        json={**payload, "available_quantity": -1},
+        headers=supreme_headers,
+    )
+    assert invalid_quantity.status_code == 422
+    invalid_currency = client.post(
+        f"/api/v1/admin/products/{product.id}/listings",
+        json={**payload, "currency": "US1"},
+        headers=supreme_headers,
+    )
+    assert invalid_currency.status_code == 422
+    invalid_status = client.post(
+        f"/api/v1/admin/products/{product.id}/listings",
+        json={**payload, "status": "draft"},
+        headers=supreme_headers,
+    )
+    assert invalid_status.status_code == 422
+    mismatched_variant = client.post(
+        f"/api/v1/admin/products/{product.id}/listings",
+        json={**payload, "product_variant_id": str(other_variant.id)},
+        headers=supreme_headers,
+    )
+    assert mismatched_variant.status_code == 404
+    assert mismatched_variant.json()["error"]["code"] == "variant_not_found"
+
+    missing_product = client.post(f"/api/v1/admin/products/{uuid4()}/listings", json=payload, headers=supreme_headers)
+    assert missing_product.status_code == 404
+
+    other_product.archived_at = datetime.now(UTC)
+    db_session.commit()
+    archived = client.post(
+        f"/api/v1/admin/products/{other_product.id}/listings",
+        json={**payload, "product_variant_id": None},
+        headers=supreme_headers,
+    )
+    assert archived.status_code == 409
+    assert archived.json()["error"]["code"] == "product_archived"
+
+    created = client.post(f"/api/v1/admin/products/{product.id}/listings", json=payload, headers=supreme_headers)
+    assert created.status_code == 201
+    created_body = created.json()
+    assert created_body["product_id"] == str(product.id)
+    assert created_body["product_variant_id"] == str(variant.id)
+    assert created_body["price_cents"] == 23000
+    assert created_body["currency"] == "USD"
+    assert created_body["available_quantity"] == 3
+    assert created_body["status"] == "active"
+    assert created_body["product"]["slug"] == "jordan-1-retro-high-test"
+
+    zero_quantity = client.post(
+        f"/api/v1/admin/products/{product.id}/listings",
+        json={**payload, "product_variant_id": None, "price_cents": 10000, "available_quantity": 0},
+        headers=supreme_headers,
+    )
+    assert zero_quantity.status_code == 201
+    sold = client.post(
+        f"/api/v1/admin/products/{product.id}/listings",
+        json={**payload, "product_variant_id": None, "price_cents": 9000, "available_quantity": 5, "status": "sold"},
+        headers=supreme_headers,
+    )
+    assert sold.status_code == 201
+
+    detail = client.get("/api/v1/products/jordan-1-retro-high-test")
+    assert detail.status_code == 200
+    assert detail.json()["lowest_active_listing"]["id"] == created_body["id"]
+    assert detail.json()["lowest_active_listing"]["available_quantity"] == 3
+
+    buyer_access, _buyer = register_user(client, email="create-listing-buyer@example.com")
+    buyer_headers = {"Authorization": f"Bearer {buyer_access}"}
+    active_cart = client.post(
+        "/api/v1/cart/items",
+        json={"listing_id": created_body["id"], "quantity": 3},
+        headers=buyer_headers,
+    )
+    assert active_cart.status_code == 201
+    zero_cart = client.post(
+        "/api/v1/cart/items",
+        json={"listing_id": zero_quantity.json()["id"], "quantity": 1},
+        headers=buyer_headers,
+    )
+    assert zero_cart.status_code == 409
+    sold_cart = client.post(
+        "/api/v1/cart/items",
+        json={"listing_id": sold.json()["id"], "quantity": 1},
+        headers=buyer_headers,
+    )
+    assert sold_cart.status_code == 409
+
+    quantity_updated = client.post(
+        f"/api/v1/admin/listings/{created_body['id']}/inventory/quantity",
+        json={"adjustment": 2},
+        headers=supreme_headers,
+    )
+    assert quantity_updated.status_code == 200
+    assert quantity_updated.json()["available_quantity"] == 5
+    status_updated = client.patch(
+        f"/api/v1/admin/listings/{created_body['id']}/inventory/status",
+        json={"status": "sold"},
+        headers=supreme_headers,
+    )
+    assert status_updated.status_code == 200
+    assert status_updated.json()["status"] == "sold"
+    reactivated = client.patch(
+        f"/api/v1/admin/listings/{created_body['id']}/inventory/status",
+        json={"status": "active"},
+        headers=supreme_headers,
+    )
+    assert reactivated.status_code == 200
+    assert reactivated.json()["status"] == "active"
+
+    managed = client.get("/api/v1/admin/products", headers=normal_headers)
+    assert managed.status_code == 200
+    managed_product = next(item for item in managed.json()["items"] if item["id"] == str(product.id))
+    assert managed_product["inventory_summary"]["total_listings"] == 3
+    assert managed_product["inventory_summary"]["active_listings"] == 2
+    assert managed_product["inventory_summary"]["total_available_quantity"] == 5
+    assert managed_product["inventory_summary"]["lowest_active_price_cents"] == 23000
+    assert any(
+        item["id"] == created_body["id"] and item["available_quantity"] == 5 and item["status"] == "active"
+        for item in managed_product["inventory_items"]
+    )
+
+
+def test_supreme_admin_inventory_management_api(client: TestClient, db_session: Session) -> None:
+    product = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
+    assert product is not None
+    listing = create_store_listing(db_session, product, price_cents=24400, available_quantity=2)
+    listing_id = str(listing.id)
+
+    customer_access, _body = register_user(client, email="inventory-api-customer@example.com")
+    customer_headers = {"Authorization": f"Bearer {customer_access}"}
+    normal_headers = admin_headers(client, db_session, email="inventory-api-normal@example.com")
+    supreme_headers = supreme_admin_headers(client, db_session, email="inventory-api-supreme@example.com")
+
+    anonymous = client.post(f"/api/v1/admin/listings/{listing_id}/inventory/quantity", json={"adjustment": 1})
+    assert anonymous.status_code == 401
+    customer = client.post(
+        f"/api/v1/admin/listings/{listing_id}/inventory/quantity",
+        json={"adjustment": 1},
+        headers=customer_headers,
+    )
+    assert customer.status_code == 403
+    normal = client.post(
+        f"/api/v1/admin/listings/{listing_id}/inventory/quantity",
+        json={"adjustment": 1},
+        headers=normal_headers,
+    )
+    assert normal.status_code == 403
+    db_session.refresh(listing)
+    assert listing.available_quantity == 2
+
+    invalid = client.post(
+        f"/api/v1/admin/listings/{listing_id}/inventory/quantity",
+        json={"adjustment": 0},
+        headers=supreme_headers,
+    )
+    assert invalid.status_code == 422
+    below_zero = client.post(
+        f"/api/v1/admin/listings/{listing_id}/inventory/quantity",
+        json={"adjustment": -3},
+        headers=supreme_headers,
+    )
+    assert below_zero.status_code == 409
+    db_session.refresh(listing)
+    assert listing.available_quantity == 2
+
+    increased = client.post(
+        f"/api/v1/admin/listings/{listing_id}/inventory/quantity",
+        json={"adjustment": 4},
+        headers=supreme_headers,
+    )
+    assert increased.status_code == 200
+    assert increased.json()["available_quantity"] == 6
+
+    missing = client.post(
+        f"/api/v1/admin/listings/{uuid4()}/inventory/quantity",
+        json={"adjustment": 1},
+        headers=supreme_headers,
+    )
+    assert missing.status_code == 404
+
+    rejected_status = client.patch(
+        f"/api/v1/admin/listings/{listing_id}/inventory/status",
+        json={"status": "sold"},
+        headers=normal_headers,
+    )
+    assert rejected_status.status_code == 403
+    db_session.refresh(listing)
+    assert listing.status == "active"
+
+    sold = client.patch(
+        f"/api/v1/admin/listings/{listing_id}/inventory/status",
+        json={"status": "sold"},
+        headers=supreme_headers,
+    )
+    assert sold.status_code == 200
+    assert sold.json()["status"] == "sold"
+
+    active = client.patch(
+        f"/api/v1/admin/listings/{listing_id}/inventory/status",
+        json={"status": "active"},
+        headers=supreme_headers,
+    )
+    assert active.status_code == 200
+    assert active.json()["status"] == "active"
+
+    managed = client.get("/api/v1/admin/products", headers=normal_headers)
+    assert managed.status_code == 200
+    managed_product = next(item for item in managed.json()["items"] if item["id"] == str(product.id))
+    assert managed_product["inventory_summary"]["total_available_quantity"] >= 6
+    assert any(item["id"] == listing_id and item["available_quantity"] == 6 for item in managed_product["inventory_items"])
 
 
 def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session: Session) -> None:
@@ -977,6 +1463,7 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
     item_id = added.json()["id"]
     assert added.json()["quantity"] == 2
     assert added.json()["available"] is True
+    assert added.json()["listing"]["available_quantity"] == 10
     assert added.json()["listing"]["product"]["slug"] == "jordan-1-retro-high-test"
 
     merged = client.post(
@@ -988,6 +1475,18 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
     assert merged.json()["id"] == item_id
     assert merged.json()["quantity"] == 5
     assert "UNIQUE constraint failed" not in merged.text
+
+    excessive_add = client.post(
+        "/api/v1/cart/items",
+        json={"listing_id": listing_id, "quantity": 6},
+        headers=buyer_headers,
+    )
+    assert excessive_add.status_code == 409
+    assert excessive_add.json()["error"]["code"] == "quantity_exceeds_availability"
+
+    excessive_update = client.patch(f"/api/v1/cart/items/{item_id}", json={"quantity": 11}, headers=buyer_headers)
+    assert excessive_update.status_code == 409
+    assert excessive_update.json()["error"]["code"] == "quantity_exceeds_availability"
 
     updated = client.patch(f"/api/v1/cart/items/{item_id}", json={"quantity": 4}, headers=buyer_headers)
     assert updated.status_code == 200
@@ -1003,6 +1502,23 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
     assert cart.json()["total_quantity"] == 4
     assert cart.json()["items"][0]["id"] == item_id
 
+    existing_listing = db_session.get(Listing, listing.id)
+    assert existing_listing is not None
+    existing_listing.available_quantity = 3
+    db_session.commit()
+    quantity_limited_cart = client.get("/api/v1/cart", headers=buyer_headers)
+    assert quantity_limited_cart.status_code == 200
+    assert quantity_limited_cart.json()["items"][0]["available"] is False
+    assert quantity_limited_cart.json()["items"][0]["unavailable_reason"] == "quantity_limited"
+
+    existing_listing.available_quantity = 0
+    db_session.commit()
+    zero_quantity_add = client.post("/api/v1/cart/items", json={"listing_id": listing_id, "quantity": 1}, headers=buyer_headers)
+    assert zero_quantity_add.status_code == 409
+
+    existing_listing.available_quantity = 10
+    db_session.commit()
+
     assert client.post("/api/v1/cart/items", json={"listing_id": str(uuid4())}, headers=buyer_headers).status_code == 404
 
     inactive_listing = create_store_listing(db_session, product, price_cents=24500)
@@ -1016,8 +1532,6 @@ def test_authenticated_cart_flow_and_user_scoping(client: TestClient, db_session
     assert inactive_add.status_code == 409
     assert inactive_add.json()["error"]["code"] == "listing_unavailable"
 
-    existing_listing = db_session.get(Listing, listing.id)
-    assert existing_listing is not None
     existing_listing.status = "sold"
     db_session.commit()
     unavailable_cart = client.get("/api/v1/cart", headers=buyer_headers)
@@ -1050,6 +1564,8 @@ def test_guest_cart_resolution_and_authenticated_merge(client: TestClient, db_se
 
     active = create_store_listing(db_session, product, price_cents=24400)
     active_id = str(active.id)
+    limited = create_store_listing(db_session, product, price_cents=24600, available_quantity=2)
+    limited_id = str(limited.id)
 
     inactive = create_store_listing(db_session, product, price_cents=24500)
     inactive_id = str(inactive.id)
@@ -1071,6 +1587,7 @@ def test_guest_cart_resolution_and_authenticated_merge(client: TestClient, db_se
         json={
             "items": [
                 {"listing_id": active_id, "quantity": 2},
+                {"listing_id": limited_id, "quantity": 3},
                 {"listing_id": inactive_id, "quantity": 1},
                 {"listing_id": archived_id, "quantity": 1},
                 {"listing_id": missing_id, "quantity": 1},
@@ -1081,7 +1598,12 @@ def test_guest_cart_resolution_and_authenticated_merge(client: TestClient, db_se
     body = resolved.json()
     assert body["items"][0]["available"] is True
     assert body["items"][0]["listing"]["product"]["slug"] == "jordan-1-retro-high-test"
-    assert {item["reason"] for item in body["skipped"]} == {"listing_sold", "product_archived", "listing_not_found"}
+    assert {item["reason"] for item in body["skipped"]} == {
+        "quantity_limited",
+        "listing_sold",
+        "product_archived",
+        "listing_not_found",
+    }
 
     buyer_access, _body = register_user(client, email="guest-cart-buyer@example.com")
     buyer_headers = {"Authorization": f"Bearer {buyer_access}"}

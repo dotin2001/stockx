@@ -8,6 +8,7 @@ const cartSource = await readFile("apps/web/components/cart/cart-page-client.tsx
 const sellPageSource = await readFile("apps/web/app/sell/page.tsx", "utf8");
 const adminMessagesSource = await readFile("apps/web/components/admin/admin-messages-panel.tsx", "utf8");
 const adminUsersSource = await readFile("apps/web/components/admin/admin-users-panel.tsx", "utf8");
+const adminProductsSource = await readFile("apps/web/components/admin/admin-products-panel.tsx", "utf8");
 const headerSource = await readFile("apps/web/components/layout/site-header.tsx", "utf8");
 
 test("product detail keeps buyer actions and removes seller actions", () => {
@@ -44,6 +45,8 @@ test("admin messages are admin gated", () => {
   assert.match(adminMessagesSource, /Customer messages/);
   assert.match(adminMessagesSource, /Mark Read/);
   assert.match(headerSource, /\/admin\/messages/);
+  assert.match(headerSource, /\/admin\/products/);
+  assert.match(adminProductsSource, /Product management/);
   assert.doesNotMatch(headerSource, />\\s*Sell\\s*</);
 });
 

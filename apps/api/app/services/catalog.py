@@ -56,6 +56,7 @@ def get_lowest_active_listing_for_product(db: Session, product: Product) -> List
         .where(
             Listing.product_id == product.id,
             Listing.status == "active",
+            Listing.available_quantity > 0,
         )
         .order_by(Listing.price_cents.asc(), Listing.created_at.asc(), Listing.id.asc())
         .limit(1)

@@ -26,6 +26,7 @@ The foundation should support:
 - Account page.
 - Authenticated sell/listing entry flow.
 - Authenticated watchlist foundation.
+- Admin product management at `/admin/products`, including catalog edits, variant management, inventory summaries, and supreme-admin quantity/status controls.
 - Seeded development catalog based on representative products from the current static pages.
 - Admin authorization markers stored as `users.is_admin` for normal admins and `users.is_supreme_admin` for supreme admins.
 
@@ -118,6 +119,9 @@ GET    /api/v1/products/{slug}
 GET    /api/v1/search?q=...
 
 POST   /api/v1/listings
+GET    /api/v1/admin/products
+POST   /api/v1/admin/listings/{id}/inventory/quantity
+PATCH  /api/v1/admin/listings/{id}/inventory/status
 GET    /api/v1/watchlist
 POST   /api/v1/watchlist
 DELETE /api/v1/watchlist/{id}

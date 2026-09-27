@@ -44,6 +44,21 @@ def test_money_columns_use_integer_cents() -> None:
             assert not isinstance(column.type, Float)
 
 
+def test_listings_have_non_negative_available_quantity() -> None:
+    listings = Base.metadata.tables["listings"]
+
+    assert "available_quantity" in listings.c
+    assert isinstance(listings.c.available_quantity.type, Integer)
+    assert listings.c.available_quantity.nullable is False
+
+    check_constraints = {
+        str(constraint.sqltext)
+        for constraint in listings.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert "available_quantity >= 0" in check_constraints
+
+
 def test_products_have_archive_metadata() -> None:
     products = Base.metadata.tables["products"]
 

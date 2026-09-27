@@ -25,10 +25,16 @@ Initial tables:
 - `categories`: unique category slugs.
 - `products`: required category ownership, unique product slugs, display fields, image URL, integer `lowest_ask_cents`, and sold count.
 - `product_variants`: optional size, color, and SKU per product.
-- `listings`: user-owned product listings with integer `price_cents`, currency, and status.
+- `listings`: user-owned product listings with integer `price_cents`, non-negative `available_quantity`, currency, and status.
 - `watchlist_items`: unique `(user_id, product_id)` watch records.
 
 The foundation deliberately stores admin access as boolean flags instead of a text access-level column. New users default to customer access with both flags false. Normal admins use `is_admin`; supreme admins are operator-granted users with both `is_admin` and `is_supreme_admin` true.
+
+Listing quantity represents sellable inventory for a product or variant. Active
+listings with `available_quantity > 0` can be used by public cart flows; zero
+quantity, sold listings, cancelled listings, and archived products are reported
+as unavailable or quantity-limited instead of being silently removed from carts.
+Only supreme admins may adjust listing quantity or change inventory status.
 
 ## Migrations
 

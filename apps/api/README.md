@@ -103,6 +103,8 @@ POST   /api/v1/listings
 POST   /api/v1/listings/{id}/cancel
 GET    /api/v1/admin/listings
 POST   /api/v1/admin/listings/{id}/cancel
+POST   /api/v1/admin/listings/{id}/inventory/quantity
+PATCH  /api/v1/admin/listings/{id}/inventory/status
 GET    /api/v1/admin/messages
 GET    /api/v1/admin/messages/{id}
 POST   /api/v1/admin/messages/{id}/read
@@ -124,6 +126,15 @@ POST   /api/v1/admin/users/promote
 POST   /api/v1/admin/users/{id}/promote
 POST   /api/v1/admin/users/{id}/demote
 ```
+
+`GET /api/v1/admin/products` returns catalog products with inventory summaries
+and listing-level inventory items for admin product management. Normal admins
+can read these summaries and manage catalog product fields, archive/restore
+state, and variants. Listing inventory has durable `available_quantity`; public
+cart flows only accept active listings with quantity greater than zero and
+reject cart quantities above availability. Quantity adjustments and inventory
+status changes under `/api/v1/admin/listings/{id}/inventory/*` require a
+supreme admin.
 
 Protected routes require an access token:
 

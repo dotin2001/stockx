@@ -18,6 +18,7 @@ class CartItemUpdate(BaseModel):
 class CartListingRead(BaseModel):
     id: UUID
     price_cents: int
+    available_quantity: int
     currency: str
     status: str
     product: ProductSummary

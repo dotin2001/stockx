@@ -1,5 +1,7 @@
 export type UUID = string;
 
+export type ListingStatus = "active" | "sold" | "cancelled";
+
 export type ApiErrorEnvelope = {
   error: {
     code: string;
@@ -25,8 +27,9 @@ export type ProductVariant = {
 export type ActiveListingSummary = {
   id: UUID;
   price_cents: number;
+  available_quantity: number;
   currency: string;
-  status: "active" | "sold" | "cancelled";
+  status: ListingStatus;
   product_variant_id: UUID | null;
   created_at: string;
 };
@@ -60,6 +63,8 @@ export type ProductPage = {
 export type AdminProductRead = ProductDetail & {
   archived_at: string | null;
   archived_by_user_id: UUID | null;
+  inventory_summary: AdminProductInventorySummary;
+  inventory_items: AdminProductInventoryItem[];
 };
 
 export type AdminProductPage = {
@@ -67,6 +72,26 @@ export type AdminProductPage = {
   total: number;
   limit: number;
   offset: number;
+};
+
+export type AdminProductInventorySummary = {
+  total_listings: number;
+  active_listings: number;
+  total_available_quantity: number;
+  lowest_active_price_cents: number | null;
+};
+
+export type AdminProductInventoryItem = {
+  id: UUID;
+  user_id: UUID;
+  product_variant_id: UUID | null;
+  variant: ProductVariant | null;
+  price_cents: number;
+  available_quantity: number;
+  currency: string;
+  status: ListingStatus;
+  created_at: string;
+  updated_at: string;
 };
 
 export type AdminProductCreatePayload = {
@@ -80,10 +105,30 @@ export type AdminProductCreatePayload = {
   total_sold?: number;
 };
 
+export type AdminProductUpdatePayload = Partial<AdminProductCreatePayload>;
+
 export type ProductVariantCreatePayload = {
   size?: string | null;
   color?: string | null;
   sku?: string | null;
+};
+
+export type ProductVariantUpdatePayload = ProductVariantCreatePayload;
+
+export type ListingQuantityAdjustmentPayload = {
+  adjustment: number;
+};
+
+export type ListingStatusUpdatePayload = {
+  status: ListingStatus;
+};
+
+export type AdminListingCreatePayload = {
+  product_variant_id?: UUID | null;
+  price_cents: number;
+  currency: string;
+  available_quantity: number;
+  status: ListingStatus;
 };
 
 export type UserPublic = {
@@ -148,8 +193,9 @@ export type ListingRead = {
   product_id: UUID;
   product_variant_id: UUID | null;
   price_cents: number;
+  available_quantity: number;
   currency: string;
-  status: "active" | "sold" | "cancelled";
+  status: ListingStatus;
   created_at: string;
   updated_at: string;
 };
@@ -174,6 +220,7 @@ export type WatchlistItem = {
 export type CartListing = {
   id: UUID;
   price_cents: number;
+  available_quantity: number;
   currency: string;
   status: string;
   product: ProductSummary;

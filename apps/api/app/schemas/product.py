@@ -18,6 +18,7 @@ class ProductVariantRead(BaseModel):
 class ActiveListingSummary(BaseModel):
     id: UUID
     price_cents: int
+    available_quantity: int
     currency: str
     status: str
     product_variant_id: UUID | None = None
@@ -106,6 +107,30 @@ class ProductUpdate(BaseModel):
 class AdminProductRead(ProductDetail):
     archived_at: datetime | None = None
     archived_by_user_id: UUID | None = None
+    inventory_summary: "AdminProductInventorySummary"
+    inventory_items: list["AdminProductInventoryItem"] = Field(default_factory=list)
+
+
+class AdminProductInventorySummary(BaseModel):
+    total_listings: int
+    active_listings: int
+    total_available_quantity: int
+    lowest_active_price_cents: int | None = None
+
+
+class AdminProductInventoryItem(BaseModel):
+    id: UUID
+    user_id: UUID
+    product_variant_id: UUID | None = None
+    variant: ProductVariantRead | None = None
+    price_cents: int
+    available_quantity: int
+    currency: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AdminProductPage(BaseModel):
