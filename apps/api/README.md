@@ -1,6 +1,6 @@
 # StockX API
 
-This workspace contains the FastAPI backend for the store-owned selling site. It exposes versioned API routes, email/password auth, public catalog/search endpoints, admin product management, protected customer watchlist/cart/message actions, admin-managed listings used as store inventory, and the PostgreSQL database foundation.
+This workspace contains the FastAPI backend for the store-owned selling site. It exposes versioned API routes, email/password auth, public catalog/search endpoints, admin product management, protected customer cart/watchlist/message actions, admin-managed listings used as store inventory, and the PostgreSQL database foundation.
 
 ## Setup
 
@@ -94,6 +94,9 @@ GET    /api/v1/messages
 POST   /api/v1/messages
 GET    /api/v1/messages/{id}
 ```
+
+Guests can browse public catalog data and add active sellable items to a guest
+cart. Watchlist and message-admin actions require an authenticated customer.
 
 Normal admin store management:
 
@@ -205,7 +208,8 @@ running API server.
 
 Use the smoke test when you want to verify the running FastAPI service,
 PostgreSQL-backed seed data, refresh cookies, auth flows, admin-created store
-listings, watchlist/cart behavior, customer messages, admin bootstrap, admin
+listings, guest/authenticated cart behavior, authenticated watchlist/customer
+messages, admin bootstrap, admin
 listing management, and admin archive/restore behavior through real HTTP
 requests.
 

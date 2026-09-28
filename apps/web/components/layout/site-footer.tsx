@@ -7,7 +7,7 @@ export function SiteFooter() {
         <div>
           <h2 className="text-lg font-bold">StockX Store</h2>
           <p className="mt-3 max-w-md text-sm leading-6 text-ink-500">
-            Browse verified store products, follow prices, and keep your cart ready while the store team manages the catalog.
+            Browse verified store products, compare prices, and keep your cart ready while authenticated customers manage watchlists and store messages.
           </p>
         </div>
         <div>

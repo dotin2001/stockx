@@ -372,8 +372,20 @@ def smoke_cart(client: httpx.Client, access_token: str, listing_id: str) -> None
     guest_body = response_json(guest_resolve, "guest cart resolve")
     if not isinstance(guest_body, dict) or not isinstance(guest_body.get("items"), list):
         fail("Guest cart resolve response should include an items list.")
-    if guest_body["items"][0].get("available") is not True:
+    guest_item = guest_body["items"][0]
+    if not isinstance(guest_item, dict):
+        fail("Guest cart resolve item should be an object.")
+    if guest_item.get("available") is not True:
         fail("Guest cart resolve should mark the active listing as available.")
+    assert_equal(guest_item.get("listing_id"), listing_id, "Guest cart listing mismatch.")
+    assert_equal(guest_item.get("quantity"), 2, "Guest cart quantity mismatch.")
+    guest_listing = guest_item.get("listing")
+    if not isinstance(guest_listing, dict):
+        fail("Guest cart resolve should include listing data for active listings.")
+    if not isinstance(guest_listing.get("price_cents"), int):
+        fail("Guest cart listing should include price_cents.")
+    if not isinstance(guest_listing.get("product"), dict) or not guest_listing["product"].get("slug"):
+        fail("Guest cart listing should include product data.")
 
     headers = {"Authorization": f"Bearer {access_token}"}
     empty = request(client, "GET", "/api/v1/cart", headers=headers)

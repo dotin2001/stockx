@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError } from "@/lib/api";
@@ -19,7 +18,6 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
 
   async function addToWatchlist() {
     if (!accessToken) {
-      setActionMessage("Log in to watch this product.");
       return;
     }
     setWatching(true);
@@ -121,22 +119,14 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
           </div>
           {!activeListing ? (
             <p className="border border-ink-200 bg-ink-50 px-3 py-2 text-sm font-semibold text-ink-600">
-              No active ask is available yet. Sign in to watch this product for updates.
+              No active ask is available yet.
             </p>
           ) : null}
           {status === "authenticated" ? (
-            <>
-              <button type="button" onClick={addToWatchlist} disabled={watching} className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60">
-                {watching ? "Adding..." : "Add to Watchlist"}
-              </button>
-            </>
-          ) : (
-            <>
-              <Link href="/login" className="border border-ink-900 px-5 py-3 text-center text-sm font-bold text-ink-900 hover:bg-ink-900 hover:text-white">
-                Log in to Watch
-              </Link>
-            </>
-          )}
+            <button type="button" onClick={addToWatchlist} disabled={watching} className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60">
+              {watching ? "Adding..." : "Add to Watchlist"}
+            </button>
+          ) : null}
           {actionMessage ? <p className="text-sm font-semibold text-ink-600">{actionMessage}</p> : null}
         </div>
       </aside>
