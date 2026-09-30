@@ -1,9 +1,97 @@
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.category import CategoryRead
+
+
+class ProductDiscoverySort(StrEnum):
+    NEWEST = "newest"
+    PRICE_ASC = "price_asc"
+    PRICE_DESC = "price_desc"
+    POPULAR = "popular"
+    NAME_ASC = "name_asc"
+
+
+class ProductDiscoveryQuery(BaseModel):
+    q: str | None = Field(default=None, min_length=1)
+    category_slug: str | None = None
+    brands: list[str] = Field(default_factory=list)
+    sizes: list[str] = Field(default_factory=list)
+    min_price_cents: int | None = Field(default=None, ge=0)
+    max_price_cents: int | None = Field(default=None, ge=0)
+    available_only: bool = False
+    sort: ProductDiscoverySort = ProductDiscoverySort.NEWEST
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+
+    @field_validator("q", "category_slug", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("brands", "sizes", mode="before")
+    @classmethod
+    def normalize_string_list(cls, value: list[str] | str | None) -> list[str]:
+        if value is None:
+            return []
+        values = value if isinstance(value, list) else [value]
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            text = str(item).strip()
+            key = text.casefold()
+            if text and key not in seen:
+                normalized.append(text)
+                seen.add(key)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_price_range(self) -> "ProductDiscoveryQuery":
+        if (
+            self.min_price_cents is not None
+            and self.max_price_cents is not None
+            and self.min_price_cents > self.max_price_cents
+        ):
+            raise ValueError("min_price_cents cannot exceed max_price_cents.")
+        return self
+
+
+class ProductDiscoverySelectedFilters(BaseModel):
+    q: str | None = None
+    category_slug: str | None = None
+    brands: list[str] = Field(default_factory=list)
+    sizes: list[str] = Field(default_factory=list)
+    min_price_cents: int | None = None
+    max_price_cents: int | None = None
+    available_only: bool = False
+
+
+class ProductDiscoveryFacetOption(BaseModel):
+    value: str
+    label: str
+    count: int = Field(ge=0)
+
+
+class ProductDiscoveryPriceBounds(BaseModel):
+    min_cents: int | None = None
+    max_cents: int | None = None
+
+
+class ProductDiscoveryMetadata(BaseModel):
+    selected: ProductDiscoverySelectedFilters = Field(default_factory=ProductDiscoverySelectedFilters)
+    sort: ProductDiscoverySort = ProductDiscoverySort.NEWEST
+    brands: list[ProductDiscoveryFacetOption] = Field(default_factory=list)
+    sizes: list[ProductDiscoveryFacetOption] = Field(default_factory=list)
+    price_bounds: ProductDiscoveryPriceBounds = Field(default_factory=ProductDiscoveryPriceBounds)
+    total: int = 0
+    limit: int = 20
+    offset: int = 0
 
 
 class ProductVariantRead(BaseModel):
@@ -71,6 +159,7 @@ class ProductPage(BaseModel):
     total: int
     limit: int
     offset: int
+    discovery: ProductDiscoveryMetadata = Field(default_factory=ProductDiscoveryMetadata)
 
 
 class ProductCreate(BaseModel):

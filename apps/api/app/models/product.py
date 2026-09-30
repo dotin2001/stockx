@@ -25,7 +25,7 @@ class Product(TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
-    brand: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    brand: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     lowest_ask_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -52,7 +52,7 @@ class ProductVariant(TimestampMixin, Base):
         nullable=False,
         index=True,
     )
-    size: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    size: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     color: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sku: Mapped[str | None] = mapped_column(String(128), nullable=True)
 

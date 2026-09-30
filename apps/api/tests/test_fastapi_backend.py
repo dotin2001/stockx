@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -12,7 +13,7 @@ from app.core.config import Settings
 from app.core.security import hash_password, verify_password
 from app.models import Category, CustomerAdminMessage, Listing, Product, ProductVariant, RefreshToken, SellerProfile, User, WatchlistItem
 from app.schemas.admin_user import AdminUserRead
-from app.schemas.product import ProductSummary
+from app.schemas.product import ProductDiscoveryQuery, ProductDiscoverySort, ProductSummary
 from app.services import admin_users
 from app.services import admin_products
 from app.services import auth as auth_service
@@ -91,6 +92,34 @@ def create_store_listing(
     db_session.commit()
     db_session.refresh(listing)
     return listing
+
+
+def create_catalog_product(
+    db_session: Session,
+    category: Category,
+    *,
+    name: str,
+    slug: str,
+    brand: str,
+    size: str | None = None,
+    total_sold: int = 0,
+) -> Product:
+    product = Product(
+        category=category,
+        name=name,
+        slug=slug,
+        brand=brand,
+        description=f"{name} test product.",
+        image_url=f"https://example.test/{slug}.png",
+        lowest_ask_cents=None,
+        total_sold=total_sold,
+    )
+    db_session.add(product)
+    if size is not None:
+        db_session.add(ProductVariant(product=product, size=size, color="Test", sku=f"{slug}-{size}"))
+    db_session.commit()
+    db_session.refresh(product)
+    return product
 
 
 def assert_public_user_roles(payload: dict, *, is_admin: bool, is_supreme_admin: bool) -> None:
@@ -437,6 +466,9 @@ def test_catalog_product_category_detail_and_search(client: TestClient) -> None:
     assert products.status_code == 200
     assert products.json()["limit"] == 1
     assert products.json()["total"] == 2
+    assert products.json()["discovery"]["total"] == 2
+    assert products.json()["discovery"]["limit"] == 1
+    assert products.json()["discovery"]["offset"] == 0
     assert products.json()["items"][0]["category"]["slug"] in {"sneakers", "streetwear"}
 
     category_products = client.get("/api/v1/categories/sneakers/products")
@@ -454,6 +486,145 @@ def test_catalog_product_category_detail_and_search(client: TestClient) -> None:
     search = client.get("/api/v1/search?q=jordan")
     assert search.status_code == 200
     assert search.json()["items"][0]["slug"] == "jordan-1-retro-high-test"
+
+
+def test_product_discovery_query_schema_validation() -> None:
+    query = ProductDiscoveryQuery(
+        q=" dunk ",
+        brands=[" Nike ", "nike", "", "Jordan"],
+        sizes="10",
+        min_price_cents=1000,
+        max_price_cents=2000,
+        available_only=True,
+        sort=ProductDiscoverySort.PRICE_ASC,
+    )
+
+    assert query.q == "dunk"
+    assert query.brands == ["Nike", "Jordan"]
+    assert query.sizes == ["10"]
+    assert query.available_only is True
+    assert query.sort == ProductDiscoverySort.PRICE_ASC
+
+    with pytest.raises(ValidationError):
+        ProductDiscoveryQuery(sort="not-a-sort")
+    with pytest.raises(ValidationError):
+        ProductDiscoveryQuery(min_price_cents=-1)
+    with pytest.raises(ValidationError):
+        ProductDiscoveryQuery(min_price_cents=3000, max_price_cents=2000)
+
+
+def test_public_product_discovery_filters_sorting_and_metadata(client: TestClient, db_session: Session) -> None:
+    sneakers = db_session.scalar(select(Category).where(Category.slug == "sneakers"))
+    streetwear = db_session.scalar(select(Category).where(Category.slug == "streetwear"))
+    assert sneakers is not None
+    assert streetwear is not None
+
+    jordan = db_session.scalar(select(Product).where(Product.slug == "jordan-1-retro-high-test"))
+    hoodie = db_session.scalar(select(Product).where(Product.slug == "supreme-test-hoodie"))
+    assert jordan is not None
+    assert hoodie is not None
+    db_session.add(ProductVariant(product=hoodie, size="M", color="Black", sku="HOODIE-M"))
+    runner = create_catalog_product(
+        db_session,
+        sneakers,
+        name="Nike Test Runner",
+        slug="nike-test-runner",
+        brand="Nike",
+        size="9",
+        total_sold=30,
+    )
+    adidas = create_catalog_product(
+        db_session,
+        sneakers,
+        name="Adidas Test Forum",
+        slug="adidas-test-forum",
+        brand="Adidas",
+        size="10",
+        total_sold=1,
+    )
+
+    create_store_listing(db_session, jordan, price_cents=24000)
+    create_store_listing(db_session, runner, price_cents=18000)
+    create_store_listing(db_session, hoodie, price_cents=6000)
+    create_store_listing(db_session, adidas, price_cents=17000, status="sold", available_quantity=0)
+
+    category_brand = client.get("/api/v1/categories/sneakers/products?brand=Jordan")
+    assert category_brand.status_code == 200
+    assert [item["slug"] for item in category_brand.json()["items"]] == ["jordan-1-retro-high-test"]
+    assert category_brand.json()["discovery"]["selected"]["brands"] == ["Jordan"]
+    assert category_brand.json()["discovery"]["total"] == 1
+
+    search_brand = client.get("/api/v1/search?q=test&brand=Nike")
+    assert search_brand.status_code == 200
+    assert [item["slug"] for item in search_brand.json()["items"]] == ["nike-test-runner"]
+
+    size_filter = client.get("/api/v1/categories/sneakers/products?size=10&sort=name_asc")
+    assert size_filter.status_code == 200
+    assert [item["slug"] for item in size_filter.json()["items"]] == [
+        "adidas-test-forum",
+        "jordan-1-retro-high-test",
+    ]
+
+    available_size = client.get("/api/v1/categories/sneakers/products?size=10&available_only=true")
+    assert available_size.status_code == 200
+    assert [item["slug"] for item in available_size.json()["items"]] == ["jordan-1-retro-high-test"]
+
+    price_range = client.get("/api/v1/products?min_price=10000&max_price=20000")
+    assert price_range.status_code == 200
+    assert [item["slug"] for item in price_range.json()["items"]] == ["nike-test-runner"]
+
+    price_sorted = client.get("/api/v1/products?sort=price_asc&limit=10")
+    assert price_sorted.status_code == 200
+    assert [item["slug"] for item in price_sorted.json()["items"]][:3] == [
+        "supreme-test-hoodie",
+        "nike-test-runner",
+        "jordan-1-retro-high-test",
+    ]
+    assert price_sorted.json()["items"][-1]["slug"] == "adidas-test-forum"
+
+    popularity_sorted = client.get("/api/v1/categories/sneakers/products?sort=popular")
+    assert popularity_sorted.status_code == 200
+    assert popularity_sorted.json()["items"][0]["slug"] == "nike-test-runner"
+
+    no_matches = client.get("/api/v1/products?brand=Nope")
+    assert no_matches.status_code == 200
+    assert no_matches.json()["items"] == []
+    assert no_matches.json()["total"] == 0
+    assert no_matches.json()["discovery"]["selected"]["brands"] == ["Nope"]
+    assert {option["value"] for option in no_matches.json()["discovery"]["brands"]} >= {"Jordan", "Nike", "Supreme"}
+    assert no_matches.json()["discovery"]["price_bounds"] == {"min_cents": None, "max_cents": None}
+
+    metadata = price_sorted.json()["discovery"]
+    assert {option["value"] for option in metadata["brands"]} >= {"Jordan", "Nike", "Supreme"}
+    assert {option["value"] for option in metadata["sizes"]} >= {"9", "10", "M"}
+    assert metadata["price_bounds"] == {"min_cents": 6000, "max_cents": 24000}
+    assert metadata["sort"] == "price_asc"
+
+
+def test_public_product_discovery_validation_and_archived_exclusion(client: TestClient, db_session: Session) -> None:
+    hoodie = db_session.scalar(select(Product).where(Product.slug == "supreme-test-hoodie"))
+    assert hoodie is not None
+    create_store_listing(db_session, hoodie, price_cents=6000)
+
+    bad_sort = client.get("/api/v1/products?sort=not-a-sort")
+    assert bad_sort.status_code == 422
+    assert bad_sort.json()["error"]["code"] == "validation_error"
+
+    bad_price = client.get("/api/v1/products?min_price=-1")
+    assert bad_price.status_code == 422
+    assert bad_price.json()["error"]["code"] == "validation_error"
+
+    bad_range = client.get("/api/v1/products?min_price=2000&max_price=1000")
+    assert bad_range.status_code == 422
+    assert bad_range.json()["error"]["code"] == "validation_error"
+
+    hoodie.archived_at = datetime.now(UTC)
+    db_session.commit()
+
+    archived_search = client.get("/api/v1/search?q=hoodie")
+    assert archived_search.status_code == 200
+    assert archived_search.json()["items"] == []
+    assert archived_search.json()["discovery"]["brands"] == []
 
 
 def test_admin_product_management_flow(client: TestClient, db_session: Session) -> None:

@@ -33,10 +33,10 @@ class Listing(TimestampMixin, Base):
         nullable=True,
         index=True,
     )
-    price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
-    available_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    available_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1", index=True)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD", server_default="USD")
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active", index=True)
 
     user = relationship("User", back_populates="listings")
     product = relationship("Product", back_populates="listings")

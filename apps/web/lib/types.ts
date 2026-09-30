@@ -47,6 +47,52 @@ export type ProductSummary = {
   updated_at: string;
 };
 
+export type ProductDiscoverySort = "newest" | "price_asc" | "price_desc" | "popular" | "name_asc";
+
+export type ProductDiscoveryQueryParams = {
+  q?: string | null;
+  brand?: string[];
+  size?: string[];
+  min_price?: number | null;
+  max_price?: number | null;
+  available_only?: boolean;
+  sort?: ProductDiscoverySort;
+  limit?: number;
+  offset?: number;
+};
+
+export type ProductDiscoverySelectedFilters = {
+  q: string | null;
+  category_slug: string | null;
+  brands: string[];
+  sizes: string[];
+  min_price_cents: number | null;
+  max_price_cents: number | null;
+  available_only: boolean;
+};
+
+export type ProductDiscoveryFacetOption = {
+  value: string;
+  label: string;
+  count: number;
+};
+
+export type ProductDiscoveryPriceBounds = {
+  min_cents: number | null;
+  max_cents: number | null;
+};
+
+export type ProductDiscoveryMetadata = {
+  selected: ProductDiscoverySelectedFilters;
+  sort: ProductDiscoverySort;
+  brands: ProductDiscoveryFacetOption[];
+  sizes: ProductDiscoveryFacetOption[];
+  price_bounds: ProductDiscoveryPriceBounds;
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type ProductDetail = ProductSummary & {
   description: string | null;
   variants: ProductVariant[];
@@ -58,6 +104,7 @@ export type ProductPage = {
   total: number;
   limit: number;
   offset: number;
+  discovery: ProductDiscoveryMetadata;
 };
 
 export type AdminProductRead = ProductDetail & {

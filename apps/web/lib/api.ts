@@ -25,6 +25,7 @@ import type {
   ListingStatusUpdatePayload,
   LoginPayload,
   ProductDetail,
+  ProductDiscoveryQueryParams,
   ProductPage,
   ProductVariant,
   ProductVariantCreatePayload,
@@ -101,15 +102,47 @@ async function apiRequest<T>(path: string, options: RequestOptions = {}): Promis
   return json as T;
 }
 
+function productDiscoverySearchParams(limit: number, offset: number, params: ProductDiscoveryQueryParams = {}) {
+  const searchParams = new URLSearchParams({
+    limit: String(params.limit ?? limit),
+    offset: String(params.offset ?? offset)
+  });
+  if (params.q) {
+    searchParams.set("q", params.q);
+  }
+  for (const brand of params.brand ?? []) {
+    searchParams.append("brand", brand);
+  }
+  for (const size of params.size ?? []) {
+    searchParams.append("size", size);
+  }
+  if (params.min_price !== undefined && params.min_price !== null) {
+    searchParams.set("min_price", String(params.min_price));
+  }
+  if (params.max_price !== undefined && params.max_price !== null) {
+    searchParams.set("max_price", String(params.max_price));
+  }
+  if (params.available_only) {
+    searchParams.set("available_only", "true");
+  }
+  if (params.sort) {
+    searchParams.set("sort", params.sort);
+  }
+  return searchParams;
+}
+
 export const api = {
   listCategories: () => apiRequest<Category[]>("/api/v1/categories"),
-  listProducts: (limit = 20, offset = 0) => apiRequest<ProductPage>(`/api/v1/products?limit=${limit}&offset=${offset}`),
-  listCategoryProducts: (slug: string, limit = 20, offset = 0) =>
-    apiRequest<ProductPage>(`/api/v1/categories/${encodeURIComponent(slug)}/products?limit=${limit}&offset=${offset}`),
-  getProduct: (slug: string) => apiRequest<ProductDetail>(`/api/v1/products/${encodeURIComponent(slug)}`),
-  searchProducts: (query: string, limit = 20, offset = 0) =>
+  listProducts: (limit = 20, offset = 0, params: ProductDiscoveryQueryParams = {}) =>
+    apiRequest<ProductPage>(`/api/v1/products?${productDiscoverySearchParams(limit, offset, params).toString()}`),
+  listCategoryProducts: (slug: string, limit = 20, offset = 0, params: ProductDiscoveryQueryParams = {}) =>
     apiRequest<ProductPage>(
-      `/api/v1/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`
+      `/api/v1/categories/${encodeURIComponent(slug)}/products?${productDiscoverySearchParams(limit, offset, params).toString()}`
+    ),
+  getProduct: (slug: string) => apiRequest<ProductDetail>(`/api/v1/products/${encodeURIComponent(slug)}`),
+  searchProducts: (query: string, limit = 20, offset = 0, params: ProductDiscoveryQueryParams = {}) =>
+    apiRequest<ProductPage>(
+      `/api/v1/search?${productDiscoverySearchParams(limit, offset, { ...params, q: query }).toString()}`
     ),
   register: (payload: RegisterPayload) =>
     apiRequest<AuthResponse>("/api/v1/auth/register", {

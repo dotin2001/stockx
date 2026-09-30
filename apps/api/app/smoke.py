@@ -155,6 +155,35 @@ def smoke_public_api(client: httpx.Client) -> str:
     if SEEDED_PRODUCT_SLUG not in search_slugs:
         fail(f"Search did not return expected seeded product {SEEDED_PRODUCT_SLUG!r}.")
 
+    discovery_response = request(
+        client,
+        "GET",
+        "/api/v1/search",
+        params={"q": SEEDED_SEARCH_QUERY, "brand": "Jordan", "sort": "name_asc"},
+    )
+    assert_status(discovery_response, 200, "GET /api/v1/search with discovery filters")
+    discovery_page = response_json(discovery_response, "filtered discovery search")
+    if not isinstance(discovery_page, dict):
+        fail("Filtered discovery response should be an object.")
+    discovery = discovery_page.get("discovery")
+    if not isinstance(discovery, dict):
+        fail("Filtered discovery response should include discovery metadata.")
+    assert_equal(discovery.get("sort"), "name_asc", "Discovery sort mismatch.")
+    selected = discovery.get("selected")
+    if not isinstance(selected, dict):
+        fail("Discovery metadata should include selected filters.")
+    assert_equal(selected.get("q"), SEEDED_SEARCH_QUERY, "Discovery query metadata mismatch.")
+    assert_equal(selected.get("brands"), ["Jordan"], "Discovery brand filter metadata mismatch.")
+    if not isinstance(discovery.get("brands"), list):
+        fail("Discovery metadata should include brand facet options.")
+    if not isinstance(discovery.get("sizes"), list):
+        fail("Discovery metadata should include size facet options.")
+    if not isinstance(discovery.get("price_bounds"), dict):
+        fail("Discovery metadata should include price bounds.")
+    discovery_slugs = {item.get("slug") for item in discovery_page.get("items", []) if isinstance(item, dict)}
+    if SEEDED_PRODUCT_SLUG not in discovery_slugs:
+        fail("Filtered discovery search did not include the expected seeded product.")
+
     invalid_search = request(client, "GET", "/api/v1/search", params={"q": ""})
     assert_status(invalid_search, 422, "GET /api/v1/search?q=")
     require_error_code(response_json(invalid_search, "empty search"), "validation_error", "Empty search")
