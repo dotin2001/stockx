@@ -7,6 +7,7 @@ from app.schemas.admin_user import AdminUserPage, AdminUserPromoteByEmail, Admin
 from app.schemas.customer_message import CustomerMessagePage, CustomerMessageRead
 from app.schemas.listing import (
     AdminListingCreate,
+    ListingInventoryUpdate,
     ListingManagementRead,
     ListingPage,
     ListingQuantityAdjustment,
@@ -222,6 +223,27 @@ def update_listing_inventory_status(
     listing = listing_service.change_managed_listing_status(
         db,
         listing_id=listing_id,
+        next_status=payload.status,
+        actor=admin,
+    )
+    db.commit()
+    return ListingManagementRead.model_validate(listing)
+
+
+@router.patch("/listings/{listing_id}/inventory", response_model=ListingManagementRead)
+def update_listing_inventory(
+    listing_id: UUID,
+    payload: ListingInventoryUpdate,
+    db: DbSession,
+    admin: CurrentSupremeAdminUser,
+) -> ListingManagementRead:
+    listing = listing_service.update_managed_listing_inventory(
+        db,
+        listing_id=listing_id,
+        product_variant_id=payload.product_variant_id,
+        price_cents=payload.price_cents,
+        currency=payload.currency,
+        available_quantity=payload.available_quantity,
         next_status=payload.status,
         actor=admin,
     )

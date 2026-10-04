@@ -11,9 +11,14 @@ import { ErrorState, LoadingState } from "@/components/ui/states";
 type ProductFormState = {
   categoryId: string;
   name: string;
+  brand: string;
+  description: string;
   priceDollars: string;
   size: string;
   imageUrl: string;
+  featureBullets: string;
+  detailRows: string;
+  galleryImages: string;
 };
 
 type FormResult =
@@ -30,9 +35,14 @@ type FormResult =
 const initialFormState: ProductFormState = {
   categoryId: "",
   name: "",
+  brand: "",
+  description: "",
   priceDollars: "",
   size: "",
-  imageUrl: ""
+  imageUrl: "",
+  featureBullets: "",
+  detailRows: "",
+  galleryImages: ""
 };
 
 function centsFromDollars(value: string): number {
@@ -46,6 +56,57 @@ function isValidHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function nullableText(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function parseFeatureBullets(value: string): string[] {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function parseDetailRows(value: string): { label: string; value: string }[] | { error: string } {
+  const rows: { label: string; value: string }[] = [];
+  for (const line of value.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const separatorIndex = trimmed.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex === trimmed.length - 1) {
+      return { error: "Detail rows must use Label: Value format." };
+    }
+    rows.push({
+      label: trimmed.slice(0, separatorIndex).trim(),
+      value: trimmed.slice(separatorIndex + 1).trim()
+    });
+  }
+  return rows;
+}
+
+function parseGalleryImages(value: string): { url: string; alt: string | null }[] | { error: string } {
+  const images: { url: string; alt: string | null }[] = [];
+  for (const line of value.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const [urlPart, altPart] = trimmed.split("|", 2);
+    const url = urlPart.trim();
+    if (!isValidHttpUrl(url)) {
+      return { error: "Gallery image URLs must start with http:// or https://." };
+    }
+    images.push({
+      url,
+      alt: nullableText(altPart ?? "")
+    });
+  }
+  return images;
 }
 
 function validateForm(form: ProductFormState): string | null {
@@ -145,9 +206,24 @@ export function AdminProductForm() {
         category_id: form.categoryId,
         name: form.name.trim(),
         slug: generatedSlug,
-        brand: null,
-        description: null,
+        brand: nullableText(form.brand),
+        description: nullableText(form.description),
         image_url: form.imageUrl.trim(),
+        feature_bullets: parseFeatureBullets(form.featureBullets),
+        detail_rows: (() => {
+          const rows = parseDetailRows(form.detailRows);
+          if ("error" in rows) {
+            throw new ApiError(422, "invalid_detail_rows", rows.error);
+          }
+          return rows;
+        })(),
+        gallery_images: (() => {
+          const images = parseGalleryImages(form.galleryImages);
+          if ("error" in images) {
+            throw new ApiError(422, "invalid_gallery_images", images.error);
+          }
+          return images;
+        })(),
         lowest_ask_cents: centsFromDollars(form.priceDollars),
         total_sold: 0
       });
@@ -254,7 +330,18 @@ export function AdminProductForm() {
       </label>
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="grid gap-2 text-sm font-semibold">
-          Price in USD
+          Brand
+          <input
+            name="brand"
+            value={form.brand}
+            onChange={(event) => updateField("brand", event.target.value)}
+            className="border border-ink-200 px-3 py-3 font-normal"
+            placeholder="Nitod"
+            disabled={submitting}
+          />
+        </label>
+        <label className="grid gap-2 text-sm font-semibold">
+          Store fallback price USD
           <input
             name="price_dollars"
             required
@@ -268,6 +355,8 @@ export function AdminProductForm() {
             disabled={submitting}
           />
         </label>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
         <label className="grid gap-2 text-sm font-semibold">
           Initial size
           <input
@@ -282,6 +371,16 @@ export function AdminProductForm() {
         </label>
       </div>
       <label className="grid gap-2 text-sm font-semibold">
+        Description
+        <textarea
+          name="description"
+          value={form.description}
+          onChange={(event) => updateField("description", event.target.value)}
+          className="min-h-24 border border-ink-200 px-3 py-3 font-normal"
+          disabled={submitting}
+        />
+      </label>
+      <label className="grid gap-2 text-sm font-semibold">
         Image URL
         <input
           name="image_url"
@@ -294,6 +393,38 @@ export function AdminProductForm() {
           disabled={submitting}
         />
       </label>
+      <div className="grid gap-4">
+        <label className="grid gap-2 text-sm font-semibold">
+          Feature bullets
+          <textarea
+            value={form.featureBullets}
+            onChange={(event) => updateField("featureBullets", event.target.value)}
+            className="min-h-24 border border-ink-200 px-3 py-3 font-normal"
+            placeholder={"Premium materials\nReady to ship from store inventory"}
+            disabled={submitting}
+          />
+        </label>
+        <label className="grid gap-2 text-sm font-semibold">
+          Detail rows
+          <textarea
+            value={form.detailRows}
+            onChange={(event) => updateField("detailRows", event.target.value)}
+            className="min-h-24 border border-ink-200 px-3 py-3 font-normal"
+            placeholder={"Material: Cotton fleece\nFit: Relaxed"}
+            disabled={submitting}
+          />
+        </label>
+        <label className="grid gap-2 text-sm font-semibold">
+          Gallery image URLs
+          <textarea
+            value={form.galleryImages}
+            onChange={(event) => updateField("galleryImages", event.target.value)}
+            className="min-h-24 border border-ink-200 px-3 py-3 font-normal"
+            placeholder={"https://example.com/front.jpg | Front view\nhttps://example.com/detail.jpg | Detail view"}
+            disabled={submitting}
+          />
+        </label>
+      </div>
       <div className="border border-ink-200 bg-ink-50 px-3 py-2 text-xs font-semibold text-ink-600">
         Generated slug: <span className="text-ink-900">{generatedSlug || "product-name"}</span>
       </div>

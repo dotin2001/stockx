@@ -41,10 +41,42 @@ export type ProductSummary = {
   brand: string | null;
   image_url: string | null;
   lowest_ask_cents: number | null;
+  store_price_cents: number | null;
   total_sold: number;
   category: Category;
   created_at: string;
   updated_at: string;
+};
+
+export type ProductDetailRow = {
+  label: string;
+  value: string;
+};
+
+export type ProductGalleryImage = {
+  url: string;
+  alt: string | null;
+};
+
+export type ProductPurchaseOption = {
+  id: UUID;
+  product_variant_id: UUID | null;
+  variant: ProductVariant | null;
+  label: string;
+  price_cents: number;
+  available_quantity: number;
+  currency: string;
+  status: ListingStatus;
+  is_available: boolean;
+};
+
+export type ProductStats = {
+  total_sold: number;
+  available_size_count: number;
+  total_available_quantity: number;
+  stock_state: "in_stock" | "out_of_stock" | string;
+  category: string;
+  brand: string | null;
 };
 
 export type ProductDiscoverySort = "newest" | "price_asc" | "price_desc" | "popular" | "name_asc";
@@ -97,6 +129,12 @@ export type ProductDetail = ProductSummary & {
   description: string | null;
   variants: ProductVariant[];
   lowest_active_listing: ActiveListingSummary | null;
+  feature_bullets: string[];
+  detail_rows: ProductDetailRow[];
+  gallery_images: ProductGalleryImage[];
+  purchase_options: ProductPurchaseOption[];
+  stats: ProductStats | null;
+  related_products: ProductSummary[];
 };
 
 export type ProductPage = {
@@ -148,6 +186,9 @@ export type AdminProductCreatePayload = {
   brand?: string | null;
   description?: string | null;
   image_url?: string | null;
+  feature_bullets?: string[];
+  detail_rows?: ProductDetailRow[];
+  gallery_images?: ProductGalleryImage[];
   lowest_ask_cents?: number | null;
   total_sold?: number;
 };
@@ -177,6 +218,8 @@ export type AdminListingCreatePayload = {
   available_quantity: number;
   status: ListingStatus;
 };
+
+export type AdminListingInventoryUpdatePayload = AdminListingCreatePayload;
 
 export type UserPublic = {
   id: UUID;

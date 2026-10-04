@@ -59,6 +59,19 @@ class ListingStatusUpdate(BaseModel):
     status: str = Field(pattern="^(active|sold|cancelled)$")
 
 
+class ListingInventoryUpdate(BaseModel):
+    product_variant_id: UUID | None = None
+    price_cents: int = Field(gt=0)
+    currency: str = Field(default="USD", min_length=3, max_length=3, pattern=r"^[A-Za-z]{3}$")
+    available_quantity: int = Field(ge=0)
+    status: str = Field(pattern="^(active|sold|cancelled)$")
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return value.upper()
+
+
 class ListingPage(BaseModel):
     items: list[ListingManagementRead]
     total: int

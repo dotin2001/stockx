@@ -13,7 +13,7 @@ from app.core.config import Settings
 from app.core.security import hash_password, verify_password
 from app.models import Category, CustomerAdminMessage, Listing, Product, ProductVariant, RefreshToken, SellerProfile, User, WatchlistItem
 from app.schemas.admin_user import AdminUserRead
-from app.schemas.product import ProductDiscoveryQuery, ProductDiscoverySort, ProductSummary
+from app.schemas.product import ProductCreate, ProductDiscoveryQuery, ProductDiscoverySort, ProductSummary
 from app.services import admin_users
 from app.services import admin_products
 from app.services import auth as auth_service
@@ -69,6 +69,7 @@ def create_store_listing(
     db_session: Session,
     product: Product,
     *,
+    product_variant: ProductVariant | None = None,
     price_cents: int = 25000,
     status: str = "active",
     available_quantity: int = 10,
@@ -83,6 +84,7 @@ def create_store_listing(
     listing = Listing(
         user=user,
         product=product,
+        product_variant=product_variant,
         price_cents=price_cents,
         available_quantity=available_quantity,
         currency="USD",
@@ -513,6 +515,29 @@ def test_product_discovery_query_schema_validation() -> None:
         ProductDiscoveryQuery(min_price_cents=3000, max_price_cents=2000)
 
 
+def test_product_storefront_content_schema_validation() -> None:
+    product = ProductCreate(
+        category_id=uuid4(),
+        name="Store Product",
+        slug="store-product",
+        feature_bullets=[" Premium cotton ", ""],
+        detail_rows=[{"label": "Material", "value": "Cotton fleece"}],
+        gallery_images=[{"url": "https://example.test/product.png", "alt": " Front "}],
+    )
+
+    assert product.feature_bullets == ["Premium cotton"]
+    assert product.detail_rows[0].label == "Material"
+    assert product.gallery_images[0].alt == "Front"
+
+    with pytest.raises(ValidationError):
+        ProductCreate(
+            category_id=uuid4(),
+            name="Bad Image",
+            slug="bad-image",
+            gallery_images=[{"url": "ftp://example.test/product.png"}],
+        )
+
+
 def test_public_product_discovery_filters_sorting_and_metadata(client: TestClient, db_session: Session) -> None:
     sneakers = db_session.scalar(select(Category).where(Category.slug == "sneakers"))
     streetwear = db_session.scalar(select(Category).where(Category.slug == "streetwear"))
@@ -638,6 +663,9 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
         "brand": "Admin Brand",
         "description": "Created through the admin API.",
         "image_url": "https://example.test/admin.png",
+        "feature_bullets": ["Limited store release", "Premium construction"],
+        "detail_rows": [{"label": "Material", "value": "Leather"}],
+        "gallery_images": [{"url": "https://example.test/admin-detail.png", "alt": "Detail view"}],
         "lowest_ask_cents": 19900,
         "total_sold": 0,
     }
@@ -658,6 +686,9 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
     product_id = created_body["id"]
     assert created_body["slug"] == "admin-test-product"
     assert created_body["archived_at"] is None
+    assert created_body["feature_bullets"] == ["Limited store release", "Premium construction"]
+    assert created_body["detail_rows"] == [{"label": "Material", "value": "Leather"}]
+    assert created_body["gallery_images"][0]["url"] == "https://example.test/admin-detail.png"
 
     duplicate = client.post("/api/v1/admin/products", json=payload, headers=headers)
     assert duplicate.status_code == 409
@@ -681,12 +712,28 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
 
     updated = client.patch(
         f"/api/v1/admin/products/{product_id}",
-        json={"name": "Admin Updated Product", "slug": "admin-updated-product"},
+        json={
+            "name": "Admin Updated Product",
+            "slug": "admin-updated-product",
+            "feature_bullets": [],
+            "detail_rows": [{"label": "Care", "value": "Spot clean"}],
+            "gallery_images": [],
+        },
         headers=headers,
     )
     assert updated.status_code == 200
     assert updated.json()["name"] == "Admin Updated Product"
     assert updated.json()["slug"] == "admin-updated-product"
+    assert updated.json()["feature_bullets"] == []
+    assert updated.json()["detail_rows"] == [{"label": "Care", "value": "Spot clean"}]
+    assert updated.json()["gallery_images"] == []
+
+    invalid_content = client.patch(
+        f"/api/v1/admin/products/{product_id}",
+        json={"gallery_images": [{"url": "ftp://example.test/bad.png"}]},
+        headers=headers,
+    )
+    assert invalid_content.status_code == 422
 
     archive = client.post(f"/api/v1/admin/products/{product_id}/archive", headers=headers)
     assert archive.status_code == 200
@@ -1074,16 +1121,36 @@ def test_product_detail_exposes_lowest_active_listing(client: TestClient, db_ses
     archived_product = db_session.scalar(select(Product).where(Product.slug == "supreme-test-hoodie"))
     assert product is not None
     assert archived_product is not None
+    variant = db_session.scalar(select(ProductVariant).where(ProductVariant.product_id == product.id))
+    assert variant is not None
+    related = create_catalog_product(
+        db_session,
+        product.category,
+        name="Jordan Related Test",
+        slug="jordan-related-test",
+        brand="Jordan",
+        size="11",
+        total_sold=3,
+    )
+    create_store_listing(db_session, related, price_cents=22000)
 
     higher = create_store_listing(db_session, product, price_cents=26000)
-    lower = create_store_listing(db_session, product, price_cents=24000)
+    lower = create_store_listing(db_session, product, product_variant=variant, price_cents=24000)
 
     detail = client.get("/api/v1/products/jordan-1-retro-high-test")
     assert detail.status_code == 200
-    assert detail.json()["lowest_active_listing"]["id"] == str(lower.id)
-    assert detail.json()["lowest_active_listing"]["price_cents"] == 24000
-    assert detail.json()["lowest_active_listing"]["available_quantity"] == 10
-    assert detail.json()["lowest_active_listing"]["status"] == "active"
+    detail_body = detail.json()
+    assert detail_body["lowest_active_listing"]["id"] == str(lower.id)
+    assert detail_body["lowest_active_listing"]["price_cents"] == 24000
+    assert detail_body["lowest_active_listing"]["available_quantity"] == 10
+    assert detail_body["lowest_active_listing"]["status"] == "active"
+    assert detail_body["store_price_cents"] == 24000
+    assert detail_body["purchase_options"][0]["id"] == str(lower.id)
+    assert detail_body["purchase_options"][0]["product_variant_id"] == str(variant.id)
+    assert detail_body["purchase_options"][0]["label"] == "10 / Black / J1-TEST-10"
+    assert detail_body["stats"]["stock_state"] == "in_stock"
+    assert detail_body["stats"]["total_available_quantity"] == 20
+    assert "jordan-related-test" in {item["slug"] for item in detail_body["related_products"]}
 
     lower_model = db_session.get(Listing, lower.id)
     assert lower_model is not None
@@ -1101,7 +1168,10 @@ def test_product_detail_exposes_lowest_active_listing(client: TestClient, db_ses
 
     detail_without_active = client.get("/api/v1/products/jordan-1-retro-high-test")
     assert detail_without_active.status_code == 200
-    assert detail_without_active.json()["lowest_active_listing"] is None
+    detail_without_active_body = detail_without_active.json()
+    assert detail_without_active_body["lowest_active_listing"] is None
+    assert detail_without_active_body["purchase_options"] == []
+    assert detail_without_active_body["stats"]["stock_state"] == "out_of_stock"
 
     create_store_listing(db_session, archived_product, price_cents=9000)
     archived_product.archived_at = datetime.now(UTC)
@@ -1506,15 +1576,52 @@ def test_supreme_admin_product_listing_creation_api(client: TestClient, db_sessi
     assert reactivated.status_code == 200
     assert reactivated.json()["status"] == "active"
 
+    full_update_payload = {
+        "product_variant_id": None,
+        "price_cents": 21000,
+        "currency": "usd",
+        "available_quantity": 4,
+        "status": "active",
+    }
+    normal_update = client.patch(
+        f"/api/v1/admin/listings/{created_body['id']}/inventory",
+        json=full_update_payload,
+        headers=normal_headers,
+    )
+    assert normal_update.status_code == 403
+    invalid_update = client.patch(
+        f"/api/v1/admin/listings/{created_body['id']}/inventory",
+        json={**full_update_payload, "price_cents": 0},
+        headers=supreme_headers,
+    )
+    assert invalid_update.status_code == 422
+    mismatched_update = client.patch(
+        f"/api/v1/admin/listings/{created_body['id']}/inventory",
+        json={**full_update_payload, "product_variant_id": str(other_variant.id)},
+        headers=supreme_headers,
+    )
+    assert mismatched_update.status_code == 404
+    assert mismatched_update.json()["error"]["code"] == "variant_not_found"
+    full_update = client.patch(
+        f"/api/v1/admin/listings/{created_body['id']}/inventory",
+        json=full_update_payload,
+        headers=supreme_headers,
+    )
+    assert full_update.status_code == 200
+    assert full_update.json()["product_variant_id"] is None
+    assert full_update.json()["price_cents"] == 21000
+    assert full_update.json()["currency"] == "USD"
+    assert full_update.json()["available_quantity"] == 4
+
     managed = client.get("/api/v1/admin/products", headers=normal_headers)
     assert managed.status_code == 200
     managed_product = next(item for item in managed.json()["items"] if item["id"] == str(product.id))
     assert managed_product["inventory_summary"]["total_listings"] == 3
     assert managed_product["inventory_summary"]["active_listings"] == 2
-    assert managed_product["inventory_summary"]["total_available_quantity"] == 5
-    assert managed_product["inventory_summary"]["lowest_active_price_cents"] == 23000
+    assert managed_product["inventory_summary"]["total_available_quantity"] == 4
+    assert managed_product["inventory_summary"]["lowest_active_price_cents"] == 21000
     assert any(
-        item["id"] == created_body["id"] and item["available_quantity"] == 5 and item["status"] == "active"
+        item["id"] == created_body["id"] and item["available_quantity"] == 4 and item["status"] == "active"
         for item in managed_product["inventory_items"]
     )
 

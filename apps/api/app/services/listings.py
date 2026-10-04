@@ -225,3 +225,37 @@ def change_managed_listing_status(
     listing.status = next_status
     db.flush()
     return _load_managed_listing(db, listing.id)
+
+
+def update_managed_listing_inventory(
+    db: Session,
+    *,
+    listing_id: UUID,
+    product_variant_id: UUID | None,
+    price_cents: int,
+    currency: str,
+    available_quantity: int,
+    next_status: str,
+    actor: User,
+) -> Listing:
+    _require_supreme_admin(actor)
+    if price_cents <= 0:
+        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_listing_price", "Listing price must be greater than zero.")
+    if available_quantity < 0:
+        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_available_quantity", "Available quantity cannot be negative.")
+    if next_status not in LISTING_STATUSES:
+        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_listing_status", "Listing status is invalid.")
+
+    listing = _load_managed_listing(db, listing_id)
+    if product_variant_id is not None:
+        variant = db.get(ProductVariant, product_variant_id)
+        if variant is None or variant.product_id != listing.product_id:
+            raise APIError(status.HTTP_404_NOT_FOUND, "variant_not_found", "Product variant was not found.")
+
+    listing.product_variant_id = product_variant_id
+    listing.price_cents = price_cents
+    listing.currency = currency.upper()
+    listing.available_quantity = available_quantity
+    listing.status = next_status
+    db.flush()
+    return _load_managed_listing(db, listing.id)

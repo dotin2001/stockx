@@ -56,7 +56,7 @@ export default function HomePage() {
             ))}
             <Reveal>
               <section className="grid gap-4 border-y border-ink-200 py-10 md:grid-cols-3">
-                {["Lowest asks update from the API", "Authenticated users can watch and cart", "Static pages remain as migration reference"].map((text) => (
+                {["Store prices update from the API", "Authenticated users can watch and cart", "Static pages remain as migration reference"].map((text) => (
                   <div key={text} className="surface p-5">
                     <h3 className="text-lg font-black">{text}</h3>
                     <p className="mt-3 text-sm leading-6 text-ink-500">A sharper store foundation without losing the original storefront rhythm.</p>

@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import httpx
 
-from app.admin import promote_admin
+from app.admin import promote_admin, promote_supreme_admin
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -92,6 +92,13 @@ def promote_admin_user(email: str) -> None:
         promote_admin(email)
     except Exception as exc:
         fail(f"Could not promote smoke admin {email!r}: {exc}")
+
+
+def promote_supreme_admin_user(email: str) -> None:
+    try:
+        promote_supreme_admin(email)
+    except Exception as exc:
+        fail(f"Could not promote smoke supreme admin {email!r}: {exc}")
 
 
 def require_error_code(body: dict | list, code: str, context: str) -> None:
@@ -488,6 +495,7 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str
     admin = unique_admin_user()
     admin_token, _refresh_token = smoke_auth(client, admin)
     promote_admin_user(admin.email)
+    promote_supreme_admin_user(admin.email)
     headers = {"Authorization": f"Bearer {admin_token}"}
 
     active_listing = request(
@@ -540,8 +548,62 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str
     products_body = response_json(products, "admin product list")
     if not isinstance(products_body, dict) or not isinstance(products_body.get("items"), list):
         fail("Admin product list response should include an items list.")
-    if not any(item.get("id") == product_id for item in products_body["items"] if isinstance(item, dict)):
+    admin_product = next((item for item in products_body["items"] if isinstance(item, dict) and item.get("id") == product_id), None)
+    if admin_product is None:
         fail("Seeded product was not visible in the admin product list.")
+    category = admin_product.get("category")
+    if not isinstance(category, dict) or not isinstance(category.get("id"), str):
+        fail("Admin product should include category data for product updates.")
+    variants = admin_product.get("variants")
+    if not isinstance(variants, list):
+        fail("Admin product should include variants for stock assignment.")
+    variant_id = next((variant.get("id") for variant in variants if isinstance(variant, dict) and isinstance(variant.get("id"), str)), None)
+
+    storefront_payload = {
+        "category_id": category["id"],
+        "description": "Smoke-tested storefront content.",
+        "feature_bullets": ["Smoke-tested feature", "Ready from store stock"],
+        "detail_rows": [{"label": "Smoke", "value": "Verified"}],
+        "gallery_images": [{"url": "https://example.com/smoke-product.jpg", "alt": "Smoke product"}],
+    }
+    updated_product = request(
+        client,
+        "PATCH",
+        f"/api/v1/admin/products/{product_id}",
+        json=storefront_payload,
+        headers=headers,
+    )
+    assert_status(updated_product, 200, "PATCH /api/v1/admin/products/{id} storefront content")
+    updated_product_body = response_json(updated_product, "admin product storefront update")
+    if not isinstance(updated_product_body, dict):
+        fail("Admin product storefront update response should be an object.")
+    assert_equal(updated_product_body.get("feature_bullets"), storefront_payload["feature_bullets"], "Admin product feature bullets mismatch.")
+    if updated_product_body.get("detail_rows") != storefront_payload["detail_rows"]:
+        fail("Admin product detail rows were not persisted.")
+    if updated_product_body.get("gallery_images") != storefront_payload["gallery_images"]:
+        fail("Admin product gallery images were not persisted.")
+
+    inventory_update = request(
+        client,
+        "PATCH",
+        f"/api/v1/admin/listings/{active_listing_id}/inventory",
+        json={
+            "product_variant_id": variant_id,
+            "price_cents": 24000,
+            "currency": "USD",
+            "available_quantity": 3,
+            "status": "active",
+        },
+        headers=headers,
+    )
+    assert_status(inventory_update, 200, "PATCH /api/v1/admin/listings/{id}/inventory")
+    inventory_update_body = response_json(inventory_update, "admin stock update")
+    if not isinstance(inventory_update_body, dict):
+        fail("Admin stock update response should be an object.")
+    assert_equal(inventory_update_body.get("price_cents"), 24000, "Admin stock price update mismatch.")
+    assert_equal(inventory_update_body.get("available_quantity"), 3, "Admin stock quantity update mismatch.")
+    assert_equal(inventory_update_body.get("status"), "active", "Admin stock status update mismatch.")
+    assert_equal(inventory_update_body.get("product_variant_id"), variant_id, "Admin stock variant assignment mismatch.")
 
     listings = request(client, "GET", "/api/v1/admin/listings", params={"status": "active"}, headers=headers)
     assert_status(listings, 200, "GET /api/v1/admin/listings")
@@ -585,6 +647,31 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str
 
     visible_detail = request(client, "GET", f"/api/v1/products/{SEEDED_PRODUCT_SLUG}")
     assert_status(visible_detail, 200, "GET restored product detail")
+    visible_detail_body = response_json(visible_detail, "restored product detail")
+    if not isinstance(visible_detail_body, dict):
+        fail("Restored product detail response should be an object.")
+    assert_equal(visible_detail_body.get("feature_bullets"), storefront_payload["feature_bullets"], "Public product feature bullets mismatch.")
+    if visible_detail_body.get("detail_rows") != storefront_payload["detail_rows"]:
+        fail("Public product detail rows were not exposed.")
+    if visible_detail_body.get("gallery_images") != storefront_payload["gallery_images"]:
+        fail("Public product gallery images were not exposed.")
+    purchase_options = visible_detail_body.get("purchase_options")
+    if not isinstance(purchase_options, list):
+        fail("Public product detail should include purchase options.")
+    selected_option = next((option for option in purchase_options if isinstance(option, dict) and option.get("id") == active_listing_id), None)
+    if selected_option is None:
+        fail("Public product detail did not expose the updated stock record as a purchase option.")
+    assert_equal(selected_option.get("price_cents"), 24000, "Public purchase option price mismatch.")
+    assert_equal(selected_option.get("available_quantity"), 3, "Public purchase option quantity mismatch.")
+    assert_equal(selected_option.get("is_available"), True, "Public purchase option should be available.")
+    if variant_id is not None:
+        assert_equal(selected_option.get("product_variant_id"), variant_id, "Public purchase option variant mismatch.")
+    if visible_detail_body.get("store_price_cents") != 24000:
+        fail("Public product detail should expose updated store_price_cents.")
+    if not isinstance(visible_detail_body.get("stats"), dict):
+        fail("Public product detail should include product stats.")
+    if not isinstance(visible_detail_body.get("related_products"), list):
+        fail("Public product detail should include related products.")
 
     return active_listing_id
 

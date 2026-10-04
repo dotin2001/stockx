@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -28,6 +28,9 @@ class Product(TimestampMixin, Base):
     brand: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feature_bullets: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
+    detail_rows: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
+    gallery_images: Mapped[list[dict[str, str | None]]] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
     lowest_ask_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_sold: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

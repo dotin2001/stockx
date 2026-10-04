@@ -5,7 +5,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError } from "@/lib/api";
 import { formatCount, formatMoney } from "@/lib/format";
-import type { AdminProductInventoryItem, AdminProductRead, Category, ListingStatus, ProductVariant, UUID } from "@/lib/types";
+import type { AdminProductInventoryItem, AdminProductRead, Category, ListingStatus, ProductDetailRow, ProductGalleryImage, ProductVariant, UUID } from "@/lib/types";
 import { ErrorState, LoadingState } from "@/components/ui/states";
 
 type CatalogFilter = "active" | "archived" | "all";
@@ -20,6 +20,9 @@ type ProductEditState = {
   imageUrl: string;
   priceDollars: string;
   totalSold: string;
+  featureBullets: string;
+  detailRows: string;
+  galleryImages: string;
 };
 
 type VariantDraft = {
@@ -35,6 +38,8 @@ type ListingCreateDraft = {
   availableQuantity: string;
   status: ListingStatus;
 };
+
+type InventoryEditDraft = ListingCreateDraft;
 
 const emptyVariantDraft: VariantDraft = {
   size: "",
@@ -67,6 +72,64 @@ function nullableText(value: string): string | null {
   return trimmed ? trimmed : null;
 }
 
+function featureBulletsToText(items: string[]): string {
+  return items.join("\n");
+}
+
+function detailRowsToText(rows: ProductDetailRow[]): string {
+  return rows.map((row) => `${row.label}: ${row.value}`).join("\n");
+}
+
+function galleryImagesToText(images: ProductGalleryImage[]): string {
+  return images.map((image) => (image.alt ? `${image.url} | ${image.alt}` : image.url)).join("\n");
+}
+
+function parseFeatureBullets(value: string): string[] {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function parseDetailRows(value: string): ProductDetailRow[] | { error: string } {
+  const rows: ProductDetailRow[] = [];
+  for (const line of value.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const separatorIndex = trimmed.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex === trimmed.length - 1) {
+      return { error: "Detail rows must use Label: Value format." };
+    }
+    rows.push({
+      label: trimmed.slice(0, separatorIndex).trim(),
+      value: trimmed.slice(separatorIndex + 1).trim()
+    });
+  }
+  return rows;
+}
+
+function parseGalleryImages(value: string): ProductGalleryImage[] | { error: string } {
+  const images: ProductGalleryImage[] = [];
+  for (const line of value.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const [urlPart, altPart] = trimmed.split("|", 2);
+    const url = urlPart.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      return { error: "Gallery image URLs must start with http:// or https://." };
+    }
+    images.push({
+      url,
+      alt: nullableText(altPart ?? "")
+    });
+  }
+  return images;
+}
+
 function editStateFromProduct(product: AdminProductRead): ProductEditState {
   return {
     categoryId: product.category.id,
@@ -75,8 +138,11 @@ function editStateFromProduct(product: AdminProductRead): ProductEditState {
     brand: product.brand ?? "",
     description: product.description ?? "",
     imageUrl: product.image_url ?? "",
-    priceDollars: centsToDollars(product.lowest_ask_cents),
-    totalSold: String(product.total_sold)
+    priceDollars: centsToDollars(product.store_price_cents ?? product.lowest_ask_cents),
+    totalSold: String(product.total_sold),
+    featureBullets: featureBulletsToText(product.feature_bullets),
+    detailRows: detailRowsToText(product.detail_rows),
+    galleryImages: galleryImagesToText(product.gallery_images)
   };
 }
 
@@ -156,6 +222,16 @@ function listingCreatePayloadFromDraft(draft: ListingCreateDraft):
   };
 }
 
+function inventoryEditDraftFromItem(item: AdminProductInventoryItem): InventoryEditDraft {
+  return {
+    variantId: item.product_variant_id ?? "",
+    priceDollars: centsToDollars(item.price_cents),
+    currency: item.currency,
+    availableQuantity: String(item.available_quantity),
+    status: item.status
+  };
+}
+
 export function AdminProductsPanel() {
   const { status, user, accessToken } = useAuth();
   const [products, setProducts] = useState<AdminProductRead[]>([]);
@@ -168,8 +244,7 @@ export function AdminProductsPanel() {
   const [variantDraft, setVariantDraft] = useState<VariantDraft>(emptyVariantDraft);
   const [listingDraft, setListingDraft] = useState<ListingCreateDraft>(emptyListingCreateDraft);
   const [variantEdits, setVariantEdits] = useState<Record<UUID, VariantDraft>>({});
-  const [quantityDrafts, setQuantityDrafts] = useState<Record<UUID, string>>({});
-  const [statusDrafts, setStatusDrafts] = useState<Record<UUID, ListingStatus>>({});
+  const [inventoryEdits, setInventoryEdits] = useState<Record<UUID, InventoryEditDraft>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -233,8 +308,7 @@ export function AdminProductsPanel() {
       setEditState(null);
       setVariantEdits({});
       setListingDraft(emptyListingCreateDraft);
-      setQuantityDrafts({});
-      setStatusDrafts({});
+      setInventoryEdits({});
       return;
     }
     setEditState(editStateFromProduct(selectedProduct));
@@ -242,8 +316,9 @@ export function AdminProductsPanel() {
       Object.fromEntries(selectedProduct.variants.map((variant) => [variant.id, variantDraftFromVariant(variant)]))
     );
     setListingDraft(emptyListingCreateDraft);
-    setQuantityDrafts(Object.fromEntries(selectedProduct.inventory_items.map((item) => [item.id, "1"])));
-    setStatusDrafts(Object.fromEntries(selectedProduct.inventory_items.map((item) => [item.id, item.status])));
+    setInventoryEdits(
+      Object.fromEntries(selectedProduct.inventory_items.map((item) => [item.id, inventoryEditDraftFromItem(item)]))
+    );
   }, [selectedProduct]);
 
   async function reloadAfterMutation(message: string) {
@@ -267,6 +342,16 @@ export function AdminProductsPanel() {
       setMutationError("Total sold must be zero or greater.");
       return;
     }
+    const detailRows = parseDetailRows(editState.detailRows);
+    if ("error" in detailRows) {
+      setMutationError(detailRows.error);
+      return;
+    }
+    const galleryImages = parseGalleryImages(editState.galleryImages);
+    if ("error" in galleryImages) {
+      setMutationError(galleryImages.error);
+      return;
+    }
 
     setMutating("product");
     setMutationError(null);
@@ -279,6 +364,9 @@ export function AdminProductsPanel() {
         brand: nullableText(editState.brand),
         description: nullableText(editState.description),
         image_url: nullableText(editState.imageUrl),
+        feature_bullets: parseFeatureBullets(editState.featureBullets),
+        detail_rows: detailRows,
+        gallery_images: galleryImages,
         lowest_ask_cents: priceCents,
         total_sold: totalSold
       });
@@ -390,48 +478,32 @@ export function AdminProductsPanel() {
     try {
       await api.createAdminProductListing(accessToken, selectedProduct.id, result.payload);
       setListingDraft(emptyListingCreateDraft);
-      await reloadAfterMutation("Listing created.");
+      await reloadAfterMutation("Stock record created.");
     } catch (caught) {
-      setMutationError(caught instanceof ApiError ? caught.message : "Could not create listing.");
+      setMutationError(caught instanceof ApiError ? caught.message : "Could not create stock record.");
     } finally {
       setMutating(null);
     }
   }
 
-  async function adjustQuantity(item: AdminProductInventoryItem, direction: 1 | -1) {
+  async function updateInventoryItem(item: AdminProductInventoryItem) {
     if (!accessToken) {
       return;
     }
-    const amount = Number(quantityDrafts[item.id] ?? "1");
-    if (!Number.isInteger(amount) || amount <= 0) {
-      setMutationError("Quantity adjustment must be a positive whole number.");
+    const draft = inventoryEdits[item.id] ?? inventoryEditDraftFromItem(item);
+    const result = listingCreatePayloadFromDraft(draft);
+    if ("error" in result) {
+      setMutationError(result.error);
       return;
     }
-    setMutating(`quantity-${item.id}`);
+    setMutating(`inventory-${item.id}`);
     setMutationError(null);
     setNotice(null);
     try {
-      await api.adjustAdminListingQuantity(accessToken, item.id, { adjustment: amount * direction });
-      await reloadAfterMutation("Inventory quantity updated.");
+      await api.updateAdminListingInventory(accessToken, item.id, result.payload);
+      await reloadAfterMutation("Stock record updated.");
     } catch (caught) {
-      setMutationError(caught instanceof ApiError ? caught.message : "Could not update quantity.");
-    } finally {
-      setMutating(null);
-    }
-  }
-
-  async function updateInventoryStatus(item: AdminProductInventoryItem) {
-    if (!accessToken) {
-      return;
-    }
-    setMutating(`status-${item.id}`);
-    setMutationError(null);
-    setNotice(null);
-    try {
-      await api.updateAdminListingStatus(accessToken, item.id, { status: statusDrafts[item.id] ?? item.status });
-      await reloadAfterMutation("Inventory status updated.");
-    } catch (caught) {
-      setMutationError(caught instanceof ApiError ? caught.message : "Could not update status.");
+      setMutationError(caught instanceof ApiError ? caught.message : "Could not update stock record.");
     } finally {
       setMutating(null);
     }
@@ -555,7 +627,7 @@ export function AdminProductsPanel() {
                     <div>
                       <p className="font-bold">{formatCount(product.inventory_summary.total_available_quantity)} available</p>
                       <p className="mt-1 text-xs text-ink-500">
-                        {formatCount(product.inventory_summary.active_listings)} active / {formatCount(product.inventory_summary.total_listings)} listings
+                        {formatCount(product.inventory_summary.active_listings)} active / {formatCount(product.inventory_summary.total_listings)} stock records
                       </p>
                       <p className="mt-1 text-xs text-ink-500">
                         {formatMoney(product.inventory_summary.lowest_active_price_cents)}
@@ -585,6 +657,9 @@ export function AdminProductsPanel() {
                       <p className="text-xs font-bold uppercase text-market-green">Catalog</p>
                       <h2 className="mt-1 text-xl font-black">{selectedProduct.name}</h2>
                     </div>
+                    <Link href={`/product/${selectedProduct.slug}`} className="border border-ink-300 px-3 py-2 text-xs font-bold text-ink-900 hover:border-market-green hover:text-market-green">
+                      Preview
+                    </Link>
                     <button
                       type="button"
                       onClick={() => void toggleArchive(selectedProduct)}
@@ -622,7 +697,7 @@ export function AdminProductsPanel() {
                       <input value={editState.brand} onChange={(event) => setEditState({ ...editState, brand: event.target.value })} className="border border-ink-200 px-3 py-3 font-normal" />
                     </label>
                     <label className="grid gap-2 text-sm font-semibold">
-                      Price USD
+                      Store fallback price USD
                       <input type="number" min="0" step="0.01" value={editState.priceDollars} onChange={(event) => setEditState({ ...editState, priceDollars: event.target.value })} className="border border-ink-200 px-3 py-3 font-normal" />
                     </label>
                   </div>
@@ -634,6 +709,39 @@ export function AdminProductsPanel() {
                     Description
                     <textarea value={editState.description} onChange={(event) => setEditState({ ...editState, description: event.target.value })} className="min-h-24 border border-ink-200 px-3 py-3 font-normal" />
                   </label>
+                  <div className="grid gap-3 border-t border-ink-200 pt-4">
+                    <div>
+                      <p className="text-xs font-bold uppercase text-market-green">Storefront content</p>
+                      <h3 className="mt-1 text-lg font-black">Product page details</h3>
+                    </div>
+                    <label className="grid gap-2 text-sm font-semibold">
+                      Feature bullets
+                      <textarea
+                        value={editState.featureBullets}
+                        onChange={(event) => setEditState({ ...editState, featureBullets: event.target.value })}
+                        className="min-h-24 border border-ink-200 px-3 py-3 font-normal"
+                        placeholder={"Premium materials\nReady to ship from store inventory"}
+                      />
+                    </label>
+                    <label className="grid gap-2 text-sm font-semibold">
+                      Detail rows
+                      <textarea
+                        value={editState.detailRows}
+                        onChange={(event) => setEditState({ ...editState, detailRows: event.target.value })}
+                        className="min-h-24 border border-ink-200 px-3 py-3 font-normal"
+                        placeholder={"Material: Cotton fleece\nFit: Relaxed"}
+                      />
+                    </label>
+                    <label className="grid gap-2 text-sm font-semibold">
+                      Gallery image URLs
+                      <textarea
+                        value={editState.galleryImages}
+                        onChange={(event) => setEditState({ ...editState, galleryImages: event.target.value })}
+                        className="min-h-24 border border-ink-200 px-3 py-3 font-normal"
+                        placeholder={"https://example.com/front.jpg | Front view\nhttps://example.com/detail.jpg | Detail view"}
+                      />
+                    </label>
+                  </div>
                   <label className="grid gap-2 text-sm font-semibold">
                     Total sold
                     <input type="number" min="0" step="1" value={editState.totalSold} onChange={(event) => setEditState({ ...editState, totalSold: event.target.value })} className="border border-ink-200 px-3 py-3 font-normal" />
@@ -687,7 +795,7 @@ export function AdminProductsPanel() {
                 <div className="grid gap-3 border-t border-ink-200 pt-5">
                   <div>
                     <p className="text-xs font-bold uppercase text-market-green">Inventory</p>
-                    <h3 className="mt-1 text-lg font-black">Listing inventory</h3>
+                    <h3 className="mt-1 text-lg font-black">Store stock</h3>
                   </div>
                   {user.is_supreme_admin ? (
                     <>
@@ -728,46 +836,123 @@ export function AdminProductsPanel() {
                           </label>
                         </div>
                         <button type="submit" disabled={mutating === "listing-create"} className="bg-ink-900 px-4 py-2 text-xs font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60">
-                          {mutating === "listing-create" ? "Creating..." : "Create Listing"}
+                          {mutating === "listing-create" ? "Creating..." : "Create Stock"}
                         </button>
                       </form>
                       {selectedProduct.inventory_items.length === 0 ? (
-                        <p className="border border-ink-200 bg-white px-3 py-2 text-sm font-semibold text-ink-600">No sellable listings yet.</p>
+                        <p className="border border-ink-200 bg-white px-3 py-2 text-sm font-semibold text-ink-600">No stock records yet.</p>
                       ) : (
-                        selectedProduct.inventory_items.map((item) => (
-                          <div key={item.id} className="grid gap-3 border border-ink-200 p-3">
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <div>
-                                <p className="font-bold">{variantLabel(item)}</p>
-                                <p className="mt-1 text-xs font-semibold text-ink-500">{formatMoney(item.price_cents, item.currency)}</p>
+                        selectedProduct.inventory_items.map((item) => {
+                          const draft = inventoryEdits[item.id] ?? inventoryEditDraftFromItem(item);
+                          return (
+                            <div key={item.id} className="grid gap-3 border border-ink-200 p-3">
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div>
+                                  <p className="font-bold">{variantLabel(item)}</p>
+                                  <p className="mt-1 text-xs font-semibold text-ink-500">
+                                    {formatMoney(item.price_cents, item.currency)} · {formatCount(item.available_quantity)} available
+                                  </p>
+                                </div>
+                                <span className={`border px-2 py-1 text-xs font-bold uppercase ${statusTone(item.status)}`}>{item.status}</span>
                               </div>
-                              <span className={`border px-2 py-1 text-xs font-bold uppercase ${statusTone(item.status)}`}>{item.status}</span>
-                            </div>
-                            <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
-                              <label className="grid gap-1 text-xs font-bold uppercase text-ink-500">
-                                Quantity
-                                <input type="number" min="1" step="1" value={quantityDrafts[item.id] ?? "1"} onChange={(event) => setQuantityDrafts((current) => ({ ...current, [item.id]: event.target.value }))} className="border border-ink-200 px-3 py-2 text-sm font-normal text-ink-900" />
-                              </label>
-                              <button type="button" onClick={() => void adjustQuantity(item, 1)} disabled={mutating === `quantity-${item.id}`} className="self-end border border-ink-900 px-3 py-2 text-xs font-bold hover:bg-ink-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-60">
-                                Add
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                <label className="grid gap-1 text-xs font-bold uppercase text-ink-500">
+                                  Variant
+                                  <select
+                                    value={draft.variantId}
+                                    onChange={(event) =>
+                                      setInventoryEdits((current) => ({
+                                        ...current,
+                                        [item.id]: { ...draft, variantId: event.target.value }
+                                      }))
+                                    }
+                                    className="border border-ink-200 px-3 py-2 text-sm font-normal text-ink-900"
+                                  >
+                                    <option value="">Base product</option>
+                                    {selectedProduct.variants.map((variant) => (
+                                      <option key={variant.id} value={variant.id}>
+                                        {[variant.size, variant.color, variant.sku].filter(Boolean).join(" / ") || "Variant"}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="grid gap-1 text-xs font-bold uppercase text-ink-500">
+                                  Price USD
+                                  <input
+                                    type="number"
+                                    min="0.01"
+                                    step="0.01"
+                                    value={draft.priceDollars}
+                                    onChange={(event) =>
+                                      setInventoryEdits((current) => ({
+                                        ...current,
+                                        [item.id]: { ...draft, priceDollars: event.target.value }
+                                      }))
+                                    }
+                                    className="border border-ink-200 px-3 py-2 text-sm font-normal text-ink-900"
+                                  />
+                                </label>
+                              </div>
+                              <div className="grid gap-2 sm:grid-cols-3">
+                                <label className="grid gap-1 text-xs font-bold uppercase text-ink-500">
+                                  Currency
+                                  <input
+                                    value={draft.currency}
+                                    onChange={(event) =>
+                                      setInventoryEdits((current) => ({
+                                        ...current,
+                                        [item.id]: { ...draft, currency: event.target.value.toUpperCase() }
+                                      }))
+                                    }
+                                    className="border border-ink-200 px-3 py-2 text-sm font-normal text-ink-900"
+                                    maxLength={3}
+                                  />
+                                </label>
+                                <label className="grid gap-1 text-xs font-bold uppercase text-ink-500">
+                                  Quantity
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    value={draft.availableQuantity}
+                                    onChange={(event) =>
+                                      setInventoryEdits((current) => ({
+                                        ...current,
+                                        [item.id]: { ...draft, availableQuantity: event.target.value }
+                                      }))
+                                    }
+                                    className="border border-ink-200 px-3 py-2 text-sm font-normal text-ink-900"
+                                  />
+                                </label>
+                                <label className="grid gap-1 text-xs font-bold uppercase text-ink-500">
+                                  Status
+                                  <select
+                                    value={draft.status}
+                                    onChange={(event) =>
+                                      setInventoryEdits((current) => ({
+                                        ...current,
+                                        [item.id]: { ...draft, status: event.target.value as ListingStatus }
+                                      }))
+                                    }
+                                    className="border border-ink-200 px-3 py-2 text-sm font-normal text-ink-900"
+                                  >
+                                    <option value="active">Active</option>
+                                    <option value="sold">Sold</option>
+                                    <option value="cancelled">Cancelled</option>
+                                  </select>
+                                </label>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => void updateInventoryItem(item)}
+                                disabled={mutating === `inventory-${item.id}`}
+                                className="bg-ink-900 px-4 py-2 text-xs font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {mutating === `inventory-${item.id}` ? "Saving..." : "Save Stock"}
                               </button>
-                              <button type="button" onClick={() => void adjustQuantity(item, -1)} disabled={mutating === `quantity-${item.id}`} className="self-end border border-market-red/40 px-3 py-2 text-xs font-bold text-market-red hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60">
-                                Remove
-                              </button>
                             </div>
-                            <p className="text-xs font-semibold text-ink-500">{formatCount(item.available_quantity)} currently available</p>
-                            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                              <select value={statusDrafts[item.id] ?? item.status} onChange={(event) => setStatusDrafts((current) => ({ ...current, [item.id]: event.target.value as ListingStatus }))} className="border border-ink-200 px-3 py-2 text-sm">
-                                <option value="active">Active</option>
-                                <option value="sold">Sold</option>
-                                <option value="cancelled">Cancelled</option>
-                              </select>
-                              <button type="button" onClick={() => void updateInventoryStatus(item)} disabled={mutating === `status-${item.id}`} className="border border-ink-900 px-3 py-2 text-xs font-bold hover:bg-ink-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-60">
-                                Set Status
-                              </button>
-                            </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </>
                   ) : (

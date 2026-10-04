@@ -1,6 +1,7 @@
 import type {
   ApiErrorEnvelope,
   AdminListingCreatePayload,
+  AdminListingInventoryUpdatePayload,
   AdminProductCreatePayload,
   AdminProductPage,
   AdminProductRead,
@@ -321,6 +322,12 @@ export const api = {
     }),
   updateAdminListingStatus: (accessToken: string, listingId: UUID, payload: ListingStatusUpdatePayload) =>
     apiRequest<ListingManagementRead>(`/api/v1/admin/listings/${listingId}/inventory/status`, {
+      method: "PATCH",
+      body: payload,
+      accessToken
+    }),
+  updateAdminListingInventory: (accessToken: string, listingId: UUID, payload: AdminListingInventoryUpdatePayload) =>
+    apiRequest<ListingManagementRead>(`/api/v1/admin/listings/${listingId}/inventory`, {
       method: "PATCH",
       body: payload,
       accessToken

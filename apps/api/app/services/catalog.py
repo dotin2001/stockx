@@ -2,17 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import Select, and_, exists, func, or_, select
+from sqlalchemy import Select, and_, case, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import Category, Listing, Product, ProductVariant
 from app.schemas.product import (
+    ActiveListingSummary,
     ProductDiscoveryFacetOption,
     ProductDiscoveryMetadata,
     ProductDiscoveryPriceBounds,
     ProductDiscoveryQuery,
     ProductDiscoverySelectedFilters,
     ProductDiscoverySort,
+    ProductDetail,
+    ProductPurchaseOption,
+    ProductStats,
+    ProductSummary,
+    ProductVariantRead,
 )
 
 
@@ -36,6 +42,39 @@ def _lowest_active_listing_prices():
         .where(Listing.status == "active", Listing.available_quantity > 0)
         .group_by(Listing.product_id)
         .subquery()
+    )
+
+
+def _active_available_listings(product: Product) -> list[Listing]:
+    return sorted(
+        [
+            listing
+            for listing in product.listings
+            if listing.status == "active" and listing.available_quantity > 0
+        ],
+        key=lambda item: (item.price_cents, item.created_at, str(item.id)),
+    )
+
+
+def _variant_label(variant: ProductVariant | None) -> str:
+    if variant is None:
+        return "Base product"
+    return " / ".join([value for value in (variant.size, variant.color, variant.sku) if value]) or "Variant"
+
+
+def serialize_product_summary(product: Product, *, store_price_cents: int | None = None) -> ProductSummary:
+    return ProductSummary(
+        id=product.id,
+        name=product.name,
+        slug=product.slug,
+        brand=product.brand,
+        image_url=product.image_url,
+        lowest_ask_cents=product.lowest_ask_cents,
+        store_price_cents=store_price_cents if store_price_cents is not None else product.lowest_ask_cents,
+        total_sold=product.total_sold,
+        category=product.category,
+        created_at=product.created_at,
+        updated_at=product.updated_at,
     )
 
 
@@ -240,7 +279,11 @@ def get_product_by_slug(db: Session, slug: str) -> Product | None:
     return db.scalar(
         select(Product)
         .where(Product.slug == slug, Product.archived_at.is_(None))
-        .options(selectinload(Product.category), selectinload(Product.variants))
+        .options(
+            selectinload(Product.category),
+            selectinload(Product.variants),
+            selectinload(Product.listings).selectinload(Listing.product_variant),
+        )
         .execution_options(populate_existing=True)
     )
 
@@ -257,6 +300,87 @@ def get_lowest_active_listing_for_product(db: Session, product: Product) -> List
         )
         .order_by(Listing.price_cents.asc(), Listing.created_at.asc(), Listing.id.asc())
         .limit(1)
+    )
+
+
+def _related_products(db: Session, product: Product, *, limit: int = 4) -> list[Product]:
+    order_by = [Product.total_sold.desc(), Product.created_at.desc(), Product.id]
+    if product.brand:
+        order_by.insert(0, case((Product.brand == product.brand, 0), else_=1))
+    return list(
+        db.scalars(
+            select(Product)
+            .where(
+                Product.archived_at.is_(None),
+                Product.id != product.id,
+                Product.category_id == product.category_id,
+            )
+            .options(selectinload(Product.category), selectinload(Product.listings))
+            .order_by(*order_by)
+            .limit(limit)
+        ).all()
+    )
+
+
+def serialize_product_detail(db: Session, product: Product) -> ProductDetail:
+    active_listings = _active_available_listings(product)
+    lowest_listing = active_listings[0] if active_listings else None
+    purchase_options = [
+        ProductPurchaseOption(
+            id=listing.id,
+            product_variant_id=listing.product_variant_id,
+            variant=ProductVariantRead.model_validate(listing.product_variant) if listing.product_variant else None,
+            label=_variant_label(listing.product_variant),
+            price_cents=listing.price_cents,
+            available_quantity=listing.available_quantity,
+            currency=listing.currency,
+            status=listing.status,
+            is_available=True,
+        )
+        for listing in active_listings
+    ]
+    available_variant_ids = {
+        listing.product_variant_id for listing in active_listings if listing.product_variant_id is not None
+    }
+    total_available_quantity = sum(listing.available_quantity for listing in active_listings)
+    related_products = []
+    for related in _related_products(db, product):
+        related_active_listings = _active_available_listings(related)
+        related_products.append(
+            serialize_product_summary(
+                related,
+                store_price_cents=related_active_listings[0].price_cents if related_active_listings else related.lowest_ask_cents,
+            )
+        )
+
+    return ProductDetail(
+        id=product.id,
+        name=product.name,
+        slug=product.slug,
+        brand=product.brand,
+        image_url=product.image_url,
+        lowest_ask_cents=product.lowest_ask_cents,
+        store_price_cents=lowest_listing.price_cents if lowest_listing else product.lowest_ask_cents,
+        total_sold=product.total_sold,
+        category=product.category,
+        created_at=product.created_at,
+        updated_at=product.updated_at,
+        description=product.description,
+        variants=[ProductVariantRead.model_validate(variant) for variant in product.variants],
+        lowest_active_listing=ActiveListingSummary.model_validate(lowest_listing) if lowest_listing else None,
+        feature_bullets=product.feature_bullets or [],
+        detail_rows=product.detail_rows or [],
+        gallery_images=product.gallery_images or [],
+        purchase_options=purchase_options,
+        stats=ProductStats(
+            total_sold=product.total_sold,
+            available_size_count=len(available_variant_ids) if available_variant_ids else (1 if active_listings else 0),
+            total_available_quantity=total_available_quantity,
+            stock_state="in_stock" if total_available_quantity > 0 else "out_of_stock",
+            category=product.category.name,
+            brand=product.brand,
+        ),
+        related_products=related_products,
     )
 
 

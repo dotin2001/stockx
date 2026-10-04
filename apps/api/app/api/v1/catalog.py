@@ -7,12 +7,10 @@ from app.api.deps import DbSession
 from app.api.errors import APIError
 from app.schemas.category import CategoryRead
 from app.schemas.product import (
-    ActiveListingSummary,
     ProductDetail,
     ProductDiscoveryQuery,
     ProductDiscoverySort,
     ProductPage,
-    ProductSummary,
 )
 from app.services import catalog as catalog_service
 
@@ -56,7 +54,7 @@ def _discovery_query(
 
 def _product_page(result: catalog_service.ProductDiscoveryResult) -> ProductPage:
     return ProductPage(
-        items=[ProductSummary.model_validate(product) for product in result.products],
+        items=[catalog_service.serialize_product_summary(product) for product in result.products],
         total=result.total,
         limit=result.metadata.limit,
         offset=result.metadata.offset,
@@ -128,10 +126,7 @@ def get_product(slug: str, db: DbSession) -> ProductDetail:
     product = catalog_service.get_product_by_slug(db, slug)
     if product is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "product_not_found", "Product was not found.")
-    detail = ProductDetail.model_validate(product)
-    lowest_listing = catalog_service.get_lowest_active_listing_for_product(db, product)
-    detail.lowest_active_listing = ActiveListingSummary.model_validate(lowest_listing) if lowest_listing else None
-    return detail
+    return catalog_service.serialize_product_detail(db, product)
 
 
 @router.get("/search", response_model=ProductPage)
