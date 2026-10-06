@@ -13,6 +13,7 @@ from app.services.integrity import matches_integrity_target
 
 
 WATCHLIST_DUPLICATE_TARGETS = ("uq_watchlist_items_user_id_product_id", "watchlist_items.user_id, watchlist_items.product_id")
+WATCHLIST_LOAD_OPTIONS = (selectinload(WatchlistItem.product).selectinload(Product.category),)
 
 
 def _watchlist_duplicate() -> APIError:
@@ -24,7 +25,7 @@ def list_watchlist(db: Session, *, user: User) -> list[WatchlistItem]:
         db.scalars(
             select(WatchlistItem)
             .where(WatchlistItem.user_id == user.id)
-            .options(selectinload(WatchlistItem.product).selectinload(Product.category))
+            .options(*WATCHLIST_LOAD_OPTIONS)
             .order_by(WatchlistItem.created_at.desc())
         ).all()
     )
@@ -53,17 +54,24 @@ def add_watchlist_item(db: Session, *, user: User, product_id: UUID) -> Watchlis
         if matches_integrity_target(exc, WATCHLIST_DUPLICATE_TARGETS):
             raise _watchlist_duplicate() from exc
         raise
-    db.refresh(item, attribute_names=["product"])
+    return _load_user_watchlist_item(db, user=user, item_id=item.id)
+
+
+def _load_user_watchlist_item(db: Session, *, user: User, item_id: UUID) -> WatchlistItem:
+    item = db.scalar(
+        select(WatchlistItem)
+        .where(
+            WatchlistItem.id == item_id,
+            WatchlistItem.user_id == user.id,
+        )
+        .options(*WATCHLIST_LOAD_OPTIONS)
+        .execution_options(populate_existing=True)
+    )
+    if item is None:
+        raise APIError(status.HTTP_404_NOT_FOUND, "watchlist_item_not_found", "Watchlist item was not found.")
     return item
 
 
 def remove_watchlist_item(db: Session, *, user: User, item_id: UUID) -> None:
-    item = db.scalar(
-        select(WatchlistItem).where(
-            WatchlistItem.id == item_id,
-            WatchlistItem.user_id == user.id,
-        )
-    )
-    if item is None:
-        raise APIError(status.HTTP_404_NOT_FOUND, "watchlist_item_not_found", "Watchlist item was not found.")
+    item = _load_user_watchlist_item(db, user=user, item_id=item_id)
     db.delete(item)

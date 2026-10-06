@@ -26,8 +26,9 @@ The foundation should support:
 - Account page.
 - Authenticated sell/listing entry flow.
 - Authenticated watchlist foundation.
+- Admin product management at `/admin/products`, including catalog edits, variant management, inventory summaries, and supreme-admin quantity/status controls.
 - Seeded development catalog based on representative products from the current static pages.
-- Simple admin authorization marker stored as `users.is_admin`.
+- Admin authorization markers stored as `users.is_admin` for normal admins and `users.is_supreme_admin` for supreme admins.
 
 Out of scope for the first foundation:
 
@@ -118,6 +119,9 @@ GET    /api/v1/products/{slug}
 GET    /api/v1/search?q=...
 
 POST   /api/v1/listings
+GET    /api/v1/admin/products
+POST   /api/v1/admin/listings/{id}/inventory/quantity
+PATCH  /api/v1/admin/listings/{id}/inventory/status
 GET    /api/v1/watchlist
 POST   /api/v1/watchlist
 DELETE /api/v1/watchlist/{id}
@@ -154,7 +158,7 @@ Important rules:
 
 - Users have unique email addresses.
 - Passwords are stored only as hashes.
-- Admin access is stored as `is_admin BOOLEAN NOT NULL DEFAULT FALSE`, not as a text role/access-level column.
+- Admin access is stored as boolean flags, not as a text role/access-level column. Normal admins use `is_admin BOOLEAN NOT NULL DEFAULT FALSE`; supreme admins also have `is_supreme_admin BOOLEAN NOT NULL DEFAULT FALSE`.
 - Refresh tokens are stored in revocable/rotatable form.
 - Categories contain products.
 - Products may have variants.

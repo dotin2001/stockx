@@ -9,12 +9,26 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.errors import APIError
-from app.models import Category, Product, ProductVariant, User
-from app.schemas.product import ProductCreate, ProductUpdate, ProductVariantCreate, ProductVariantUpdate
+from app.models import Category, Listing, Product, ProductVariant, User
+from app.schemas.product import (
+    AdminProductInventoryItem,
+    AdminProductInventorySummary,
+    AdminProductRead,
+    ActiveListingSummary,
+    ProductCreate,
+    ProductUpdate,
+    ProductVariantCreate,
+    ProductVariantRead,
+    ProductVariantUpdate,
+)
 from app.services.integrity import matches_integrity_target
 
 
-PRODUCT_LOAD_OPTIONS = (selectinload(Product.category), selectinload(Product.variants))
+PRODUCT_LOAD_OPTIONS = (
+    selectinload(Product.category),
+    selectinload(Product.variants),
+    selectinload(Product.listings).selectinload(Listing.product_variant),
+)
 PRODUCT_SLUG_TARGETS = ("uq_products_slug", "ix_products_slug", "products.slug")
 
 
@@ -63,6 +77,63 @@ def list_managed_products(
     total = db.scalar(count_query) or 0
     products = list(db.scalars(base.limit(limit).offset(offset)).all())
     return products, total
+
+
+def serialize_admin_product(product: Product) -> AdminProductRead:
+    active_available_listings = [
+        listing for listing in product.listings if listing.status == "active" and listing.available_quantity > 0
+    ]
+    inventory_items = [
+        AdminProductInventoryItem(
+            id=listing.id,
+            user_id=listing.user_id,
+            product_variant_id=listing.product_variant_id,
+            variant=ProductVariantRead.model_validate(listing.product_variant) if listing.product_variant else None,
+            price_cents=listing.price_cents,
+            available_quantity=listing.available_quantity,
+            currency=listing.currency,
+            status=listing.status,
+            created_at=listing.created_at,
+            updated_at=listing.updated_at,
+        )
+        for listing in sorted(product.listings, key=lambda item: (item.created_at, str(item.id)), reverse=True)
+    ]
+    lowest_active_listing = min(
+        active_available_listings,
+        key=lambda item: (item.price_cents, item.created_at, str(item.id)),
+        default=None,
+    )
+
+    return AdminProductRead(
+        id=product.id,
+        name=product.name,
+        slug=product.slug,
+        brand=product.brand,
+        image_url=product.image_url,
+        lowest_ask_cents=product.lowest_ask_cents,
+        store_price_cents=lowest_active_listing.price_cents if lowest_active_listing else product.lowest_ask_cents,
+        total_sold=product.total_sold,
+        category=product.category,
+        created_at=product.created_at,
+        updated_at=product.updated_at,
+        description=product.description,
+        feature_bullets=product.feature_bullets or [],
+        detail_rows=product.detail_rows or [],
+        gallery_images=product.gallery_images or [],
+        variants=[ProductVariantRead.model_validate(variant) for variant in product.variants],
+        lowest_active_listing=ActiveListingSummary.model_validate(lowest_active_listing) if lowest_active_listing else None,
+        archived_at=product.archived_at,
+        archived_by_user_id=product.archived_by_user_id,
+        inventory_summary=AdminProductInventorySummary(
+            total_listings=len(product.listings),
+            active_listings=sum(1 for listing in product.listings if listing.status == "active"),
+            total_available_quantity=sum(
+                listing.available_quantity for listing in product.listings if listing.status == "active"
+            ),
+            lowest_active_price_cents=lowest_active_listing.price_cents if lowest_active_listing else None,
+        ),
+        inventory_items=inventory_items,
+    )
 
 
 def create_product(db: Session, payload: ProductCreate) -> Product:

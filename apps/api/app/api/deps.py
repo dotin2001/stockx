@@ -44,9 +44,22 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
 def get_current_admin_user(current_user: CurrentUser) -> User:
-    if not current_user.is_admin:
+    if not (current_user.is_admin or current_user.is_supreme_admin):
         raise APIError(status.HTTP_403_FORBIDDEN, "admin_required", "Admin access is required.")
     return current_user
 
 
 CurrentAdminUser = Annotated[User, Depends(get_current_admin_user)]
+
+
+def get_current_supreme_admin_user(current_user: CurrentUser) -> User:
+    if not current_user.is_supreme_admin:
+        raise APIError(
+            status.HTTP_403_FORBIDDEN,
+            "supreme_admin_required",
+            "Supreme admin access is required.",
+        )
+    return current_user
+
+
+CurrentSupremeAdminUser = Annotated[User, Depends(get_current_supreme_admin_user)]

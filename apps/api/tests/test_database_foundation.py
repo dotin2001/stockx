@@ -14,6 +14,8 @@ def test_foundation_tables_are_declared() -> None:
         "listings",
         "watchlist_items",
         "cart_items",
+        "seller_profiles",
+        "customer_admin_messages",
     }.issubset(Base.metadata.tables.keys())
 
 
@@ -23,6 +25,9 @@ def test_users_have_boolean_admin_flag_and_no_text_access_level() -> None:
     assert "is_admin" in users.c
     assert isinstance(users.c.is_admin.type, Boolean)
     assert users.c.is_admin.nullable is False
+    assert "is_supreme_admin" in users.c
+    assert isinstance(users.c.is_supreme_admin.type, Boolean)
+    assert users.c.is_supreme_admin.nullable is False
     assert "role" not in users.c
     assert "access_level" not in users.c
 
@@ -37,6 +42,21 @@ def test_money_columns_use_integer_cents() -> None:
     for table in Base.metadata.tables.values():
         for column in table.c:
             assert not isinstance(column.type, Float)
+
+
+def test_listings_have_non_negative_available_quantity() -> None:
+    listings = Base.metadata.tables["listings"]
+
+    assert "available_quantity" in listings.c
+    assert isinstance(listings.c.available_quantity.type, Integer)
+    assert listings.c.available_quantity.nullable is False
+
+    check_constraints = {
+        str(constraint.sqltext)
+        for constraint in listings.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert "available_quantity >= 0" in check_constraints
 
 
 def test_products_have_archive_metadata() -> None:
@@ -69,6 +89,37 @@ def test_cart_items_are_user_listing_scoped_with_positive_quantity() -> None:
         if constraint.__class__.__name__ == "CheckConstraint"
     }
     assert "quantity > 0" in check_constraints
+
+
+def test_seller_profiles_are_user_scoped_contact_records() -> None:
+    seller_profiles = Base.metadata.tables["seller_profiles"]
+
+    assert {"user_id", "phone_number", "address_line1", "city", "country"}.issubset(seller_profiles.c.keys())
+    assert seller_profiles.c.user_id.nullable is False
+    assert seller_profiles.c.phone_number.nullable is False
+    assert seller_profiles.c.address_line1.nullable is False
+    assert seller_profiles.c.city.nullable is False
+    assert seller_profiles.c.country.nullable is False
+
+    unique_constraints = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in seller_profiles.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert ("user_id",) in unique_constraints
+
+
+def test_customer_admin_messages_are_sender_scoped_support_records() -> None:
+    messages = Base.metadata.tables["customer_admin_messages"]
+
+    assert {"sender_user_id", "subject", "body", "is_read", "read_at"}.issubset(messages.c.keys())
+    assert messages.c.sender_user_id.nullable is False
+    assert messages.c.subject.nullable is False
+    assert messages.c.body.nullable is False
+    assert messages.c.is_read.nullable is False
+    assert messages.c.read_at.nullable is True
+    assert isinstance(messages.c.is_read.type, Boolean)
+    assert isinstance(messages.c.read_at.type, DateTime)
 
 
 def test_seed_data_has_stable_unique_slugs() -> None:

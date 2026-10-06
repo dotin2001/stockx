@@ -3,6 +3,8 @@ import type { ProductSummary } from "@/lib/types";
 import { formatCount, formatMoney } from "@/lib/format";
 
 export function ProductCard({ product }: { product: ProductSummary }) {
+  const price = product.store_price_cents ?? product.lowest_ask_cents;
+
   return (
     <Link href={`/product/${product.slug}`} className="group surface flex min-h-[300px] flex-col overflow-hidden transition duration-200 motion-safe:hover:-translate-y-1 hover:shadow-lift">
       <div className="grid aspect-[4/3] place-items-center bg-white p-6">
@@ -18,8 +20,8 @@ export function ProductCard({ product }: { product: ProductSummary }) {
         <h3 className="mt-2 line-clamp-2 min-h-12 text-sm font-bold uppercase leading-6 text-ink-900">{product.name}</h3>
         <div className="mt-auto flex items-end justify-between gap-4 pt-5">
           <div>
-            <p className="text-xs text-ink-500">Lowest Ask</p>
-            <p className="text-lg font-bold">{formatMoney(product.lowest_ask_cents)}</p>
+            <p className="text-xs text-ink-500">Store Price</p>
+            <p className="text-lg font-bold">{formatMoney(price)}</p>
           </div>
           <p className="text-xs text-ink-500">{formatCount(product.total_sold)} Sold</p>
         </div>

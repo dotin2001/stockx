@@ -22,6 +22,12 @@ class User(TimestampMixin, Base):
         default=False,
         server_default=text("false"),
     )
+    is_supreme_admin: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
 
     refresh_tokens = relationship(
         "RefreshToken",
@@ -29,9 +35,24 @@ class User(TimestampMixin, Base):
         cascade="all, delete-orphan",
     )
     listings = relationship("Listing", back_populates="user", cascade="all, delete-orphan")
+    seller_profile = relationship(
+        "SellerProfile",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    customer_admin_messages = relationship(
+        "CustomerAdminMessage",
+        back_populates="sender",
+        cascade="all, delete-orphan",
+    )
     watchlist_items = relationship(
         "WatchlistItem",
         back_populates="user",
         cascade="all, delete-orphan",
     )
     cart_items = relationship("CartItem", back_populates="user", cascade="all, delete-orphan")
+
+    @property
+    def is_seller(self) -> bool:
+        return self.seller_profile is not None

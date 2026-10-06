@@ -18,6 +18,7 @@ class CartItemUpdate(BaseModel):
 class CartListingRead(BaseModel):
     id: UUID
     price_cents: int
+    available_quantity: int
     currency: str
     status: str
     product: ProductSummary
@@ -41,3 +42,37 @@ class CartItemRead(BaseModel):
 class CartRead(BaseModel):
     items: list[CartItemRead]
     total_quantity: int
+
+
+class GuestCartItemInput(BaseModel):
+    listing_id: UUID
+    quantity: int = Field(default=1, gt=0)
+
+
+class GuestCartResolveRequest(BaseModel):
+    items: list[GuestCartItemInput]
+
+
+class GuestCartSkippedItem(BaseModel):
+    listing_id: UUID
+    quantity: int
+    reason: str
+
+
+class GuestCartItemRead(BaseModel):
+    listing_id: UUID
+    quantity: int
+    available: bool
+    unavailable_reason: str | None = None
+    listing: CartListingRead | None = None
+
+
+class GuestCartRead(BaseModel):
+    items: list[GuestCartItemRead]
+    total_quantity: int
+    skipped: list[GuestCartSkippedItem] = []
+
+
+class CartMergeResponse(BaseModel):
+    cart: CartRead
+    skipped: list[GuestCartSkippedItem] = []

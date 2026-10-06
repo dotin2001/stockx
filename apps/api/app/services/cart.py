@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.errors import APIError
 from app.models import CartItem, Listing, Product, User
-from app.schemas.cart import CartItemRead, CartListingRead
+from app.schemas.cart import CartItemRead, CartListingRead, GuestCartItemRead, GuestCartSkippedItem
 from app.services.integrity import matches_integrity_target
 
 
@@ -37,11 +37,37 @@ def _load_listing(db: Session, listing_id: UUID) -> Listing:
     return listing
 
 
-def _require_listing_available(listing: Listing) -> None:
+def _availability_reason(listing: Listing) -> str | None:
     if listing.product.archived_at is not None:
-        raise APIError(status.HTTP_409_CONFLICT, "product_archived", "Product is no longer available.")
+        return "product_archived"
     if listing.status != "active":
+        return f"listing_{listing.status}"
+    if listing.available_quantity <= 0:
+        return "inventory_unavailable"
+    return None
+
+
+def _availability_reason_for_quantity(listing: Listing, quantity: int) -> str | None:
+    unavailable_reason = _availability_reason(listing)
+    if unavailable_reason is not None:
+        return unavailable_reason
+    if quantity > listing.available_quantity:
+        return "quantity_limited"
+    return None
+
+
+def _require_listing_available(listing: Listing, *, quantity: int) -> None:
+    unavailable_reason = _availability_reason(listing)
+    if unavailable_reason == "product_archived":
+        raise APIError(status.HTTP_409_CONFLICT, "product_archived", "Product is no longer available.")
+    if unavailable_reason is not None:
         raise APIError(status.HTTP_409_CONFLICT, "listing_unavailable", "Listing is no longer available.")
+    if quantity > listing.available_quantity:
+        raise APIError(
+            status.HTTP_409_CONFLICT,
+            "quantity_exceeds_availability",
+            "Requested quantity exceeds available inventory.",
+        )
 
 
 def _load_user_cart_item(db: Session, *, user: User, item_id: UUID) -> CartItem:
@@ -58,7 +84,6 @@ def list_cart_items(db: Session, *, user: User) -> list[CartItem]:
 def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -> CartItem:
     user_id = user.id
     listing = _load_listing(db, listing_id)
-    _require_listing_available(listing)
 
     item = db.scalar(
         select(CartItem)
@@ -67,9 +92,11 @@ def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -
         .execution_options(populate_existing=True)
     )
     if item is None:
+        _require_listing_available(listing, quantity=quantity)
         item = CartItem(user_id=user.id, listing_id=listing.id, quantity=quantity)
         db.add(item)
     else:
+        _require_listing_available(listing, quantity=item.quantity + quantity)
         item.quantity += quantity
 
     try:
@@ -86,6 +113,7 @@ def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -
         )
         if item is None:
             raise APIError(status.HTTP_409_CONFLICT, "cart_item_duplicate", "Cart item already exists.") from exc
+        _require_listing_available(listing, quantity=item.quantity + quantity)
         item.quantity += quantity
         db.flush()
     return _load_user_cart_item(db, user=user, item_id=item.id)
@@ -93,6 +121,7 @@ def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -
 
 def update_cart_item(db: Session, *, user: User, item_id: UUID, quantity: int) -> CartItem:
     item = _load_user_cart_item(db, user=user, item_id=item_id)
+    _require_listing_available(item.listing, quantity=quantity)
     item.quantity = quantity
     db.flush()
     return _load_user_cart_item(db, user=user, item_id=item.id)
@@ -103,13 +132,52 @@ def remove_cart_item(db: Session, *, user: User, item_id: UUID) -> None:
     db.delete(item)
 
 
+def resolve_guest_cart_items(db: Session, *, items: list[tuple[UUID, int]]) -> tuple[list[GuestCartItemRead], list[GuestCartSkippedItem]]:
+    resolved: list[GuestCartItemRead] = []
+    skipped: list[GuestCartSkippedItem] = []
+    for listing_id, quantity in items:
+        listing = db.scalar(select(Listing).where(Listing.id == listing_id).options(*LISTING_LOAD_OPTIONS))
+        if listing is None:
+            reason = "listing_not_found"
+            resolved.append(GuestCartItemRead(listing_id=listing_id, quantity=quantity, available=False, unavailable_reason=reason, listing=None))
+            skipped.append(GuestCartSkippedItem(listing_id=listing_id, quantity=quantity, reason=reason))
+            continue
+
+        reason = _availability_reason_for_quantity(listing, quantity)
+        resolved.append(
+            GuestCartItemRead(
+                listing_id=listing.id,
+                quantity=quantity,
+                available=reason is None,
+                unavailable_reason=reason,
+                listing=CartListingRead.model_validate(listing),
+            )
+        )
+        if reason is not None:
+            skipped.append(GuestCartSkippedItem(listing_id=listing.id, quantity=quantity, reason=reason))
+    return resolved, skipped
+
+
+def merge_guest_cart_items(db: Session, *, user: User, items: list[tuple[UUID, int]]) -> tuple[list[CartItem], list[GuestCartSkippedItem]]:
+    skipped: list[GuestCartSkippedItem] = []
+    for listing_id, quantity in items:
+        listing = db.scalar(select(Listing).where(Listing.id == listing_id).options(*LISTING_LOAD_OPTIONS))
+        if listing is None:
+            skipped.append(GuestCartSkippedItem(listing_id=listing_id, quantity=quantity, reason="listing_not_found"))
+            continue
+
+        reason = _availability_reason_for_quantity(listing, quantity)
+        if reason is not None:
+            skipped.append(GuestCartSkippedItem(listing_id=listing.id, quantity=quantity, reason=reason))
+            continue
+
+        add_cart_item(db, user=user, listing_id=listing.id, quantity=quantity)
+    return list_cart_items(db, user=user), skipped
+
+
 def serialize_cart_item(item: CartItem) -> CartItemRead:
     listing = item.listing
-    unavailable_reason = None
-    if listing.product.archived_at is not None:
-        unavailable_reason = "product_archived"
-    elif listing.status != "active":
-        unavailable_reason = f"listing_{listing.status}"
+    unavailable_reason = _availability_reason_for_quantity(listing, item.quantity)
 
     return CartItemRead(
         id=item.id,

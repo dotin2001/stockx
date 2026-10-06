@@ -61,6 +61,21 @@ export function SiteHeader() {
           ))}
           {status === "authenticated" && user ? (
             <>
+              {user.is_admin ? (
+                <>
+                  <Link href="/admin/products" className="transition hover:text-market-green">
+                    Admin Products
+                  </Link>
+                  <Link href="/admin/messages" className="transition hover:text-market-green">
+                    Messages
+                  </Link>
+                  {user.is_supreme_admin ? (
+                    <Link href="/admin/users" className="transition hover:text-market-green">
+                      Users
+                    </Link>
+                  ) : null}
+                </>
+              ) : null}
               <Link href="/account" className="transition hover:text-market-green">
                 Account
               </Link>
@@ -78,8 +93,8 @@ export function SiteHeader() {
               </Link>
             </>
           )}
-          <Link href="/sell" className="bg-market-green px-5 py-2.5 font-semibold text-white transition motion-safe:hover:-translate-y-0.5 hover:bg-ink-900">
-            Sell
+          <Link href="/cart" className="border border-ink-300 px-4 py-2.5 font-semibold transition hover:border-market-green hover:text-market-green">
+            Cart
           </Link>
         </nav>
       </div>
@@ -89,13 +104,28 @@ export function SiteHeader() {
       {menuOpen ? (
         <nav className="border-t border-ink-200 bg-white md:hidden" aria-label="Mobile navigation">
           <div className="page-shell grid gap-1 py-4 text-sm font-semibold text-ink-800">
-            {[...publicLinks, { label: "Sell", href: "/sell" }].map((link) => (
+            {[...publicLinks, { label: "Cart", href: "/cart" }].map((link) => (
               <Link key={link.label} href={link.href} className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
                 {link.label}
               </Link>
             ))}
             {status === "authenticated" ? (
               <>
+                {user?.is_admin ? (
+                  <>
+                    <Link href="/admin/products" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
+                      Admin Products
+                    </Link>
+                    <Link href="/admin/messages" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
+                      Messages
+                    </Link>
+                    {user?.is_supreme_admin ? (
+                      <Link href="/admin/users" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
+                        Users
+                      </Link>
+                    ) : null}
+                  </>
+                ) : null}
                 <Link href="/account" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
                   Account
                 </Link>

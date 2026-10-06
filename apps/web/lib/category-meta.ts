@@ -36,7 +36,7 @@ export function getCategoryMeta(slug: string): CategoryMeta {
     meta[slug] ?? {
       slug,
       label: slug,
-      description: "Browse verified marketplace products in this category.",
+      description: "Browse verified store products in this category.",
       imageUrl:
         "https://images.stockx.com/images/Air-Jordan-1-Retro-High-Element-Gore-Tex-Black-Particle-Grey.jpg?fit=fill&bg=FFFFFF&w=960&h=420&auto=compress&q=90&dpr=1",
       filters: []
