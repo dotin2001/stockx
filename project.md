@@ -102,7 +102,7 @@ The frontend should fetch catalog and auth state from the backend instead of emb
 
 ## Backend Plan
 
-Initial API endpoints:
+Implemented API endpoints:
 
 ```text
 POST   /api/v1/auth/register
@@ -123,17 +123,18 @@ POST   /api/v1/watchlist
 DELETE /api/v1/watchlist/{id}
 ```
 
-Suggested backend modules:
+Current backend modules:
 
 ```text
-auth
-users
-categories
-products
-search
-listings
-watchlist
+apps/api/app/api/v1/
+apps/api/app/core/
+apps/api/app/db/
+apps/api/app/models/
+apps/api/app/schemas/
+apps/api/app/services/
 ```
+
+Protected account, listing, and watchlist routes require a bearer access token. Refresh tokens are stored in an HTTP-only cookie named `stockx_refresh` by default and are rotated on refresh.
 
 ## Database Plan
 
@@ -195,6 +196,13 @@ Flow:
 
 Backend authorization must be enforced even when the frontend hides protected actions.
 
+Auth implementation notes:
+
+- Passwords are hashed with Argon2.
+- Access tokens are signed and short-lived.
+- Refresh tokens are stored only as hashes in the database.
+- Logout revokes the active refresh token and clears the cookie.
+
 ## Roadmap
 
 1. Documentation and conventions.
@@ -204,10 +212,10 @@ Backend authorization must be enforced even when the frontend hides protected ac
 5. FastAPI backend scaffold.
 6. PostgreSQL, SQLAlchemy, and Alembic setup.
 7. Initial schema and seed data.
-8. Public catalog/search/product APIs.
-9. Frontend catalog integration.
-10. Auth backend and frontend auth state.
-11. Protected account, sell, listing, and watchlist foundations.
+8. Public catalog/search/product APIs. Done in `build-fastapi-backend`.
+9. Auth backend and protected listing/watchlist foundations. Done in `build-fastapi-backend`.
+10. Frontend catalog integration.
+11. Frontend auth state and protected page integration.
 12. Verification, smoke tests, and static file cleanup after parity.
 
 ## Project Skills

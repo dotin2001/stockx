@@ -39,4 +39,4 @@ class Listing(TimestampMixin, Base):
     user = relationship("User", back_populates="listings")
     product = relationship("Product", back_populates="listings")
     product_variant = relationship("ProductVariant", back_populates="listings")
-
+    cart_items = relationship("CartItem", back_populates="listing", cascade="all, delete-orphan")
