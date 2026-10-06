@@ -59,4 +59,21 @@ Seed data is idempotent by slug and includes representative categories and produ
 - `streetwear`
 - `collectibles`
 
-Run the seed command more than once to verify duplicate categories or products are not created.
+The catalog contains five configured products in each category. Catalog-only
+seeding remains available immediately after migrations and does not create a
+user account or login credential.
+
+To add deterministic sellable inventory, first register a user through the API
+or web app and promote that existing user to admin. Then run:
+
+```bash
+cd apps/api
+python -m app.admin promote admin@example.com
+python -m app.db.seed --inventory-owner-email admin@example.com
+```
+
+The inventory seed creates one category-appropriate purchase option and one
+active USD listing per seeded product with quantity `10`. It is idempotent for
+the selected admin and reserved `SEED-...` SKUs. Running it again resets those
+managed demo listings to their configured price, active status, and quantity
+without changing unrelated administrator-created inventory.

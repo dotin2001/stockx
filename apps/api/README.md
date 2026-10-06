@@ -50,7 +50,22 @@ cd apps/api
 python -m app.db.seed
 ```
 
-The seed command is idempotent by category and product slug.
+The catalog seed is idempotent by category and product slug and creates five
+configured products in each of Sneakers, Streetwear, and Collectibles. It does
+not create a user or inventory owner.
+
+After registering and promoting an existing admin account, seed one active
+quantity-10 inventory listing for every configured product:
+
+```bash
+python -m app.admin promote admin@example.com
+python -m app.db.seed --inventory-owner-email admin@example.com
+```
+
+Inventory seeding uses deterministic `SEED-...` purchase-option SKUs. Running
+the command again for the same admin does not create duplicates, but it resets
+the managed demo listings to their configured USD price, active status, and
+quantity. Unrelated administrator-created variants and listings are preserved.
 
 ## API Routes
 

@@ -1,7 +1,22 @@
-from sqlalchemy import Boolean, DateTime, Float, Integer
+from collections import Counter
+
+import pytest
+from sqlalchemy import Boolean, DateTime, Float, Integer, func, select
+from sqlalchemy.orm import Session
 
 from app.db.base import Base
-from app.db.seed import CATEGORIES, PRODUCTS
+from app.db.seed import (
+    CATEGORIES,
+    PRODUCTS,
+    SEED_INVENTORY_QUANTITY,
+    SEED_SKU_PREFIX,
+    SeedInventoryOwnerError,
+    parse_args,
+    upsert_categories,
+    upsert_products,
+    upsert_seed_inventory,
+)
+from app.models import Listing, Product, ProductVariant, User
 
 
 def test_foundation_tables_are_declared() -> None:
@@ -130,3 +145,94 @@ def test_seed_data_has_stable_unique_slugs() -> None:
     assert len(category_slugs) == len(set(category_slugs))
     assert len(product_slugs) == len(set(product_slugs))
     assert all(product.lowest_ask_cents is None or product.lowest_ask_cents >= 0 for product in PRODUCTS)
+
+
+def test_seed_data_has_five_valid_products_per_supported_category() -> None:
+    counts = Counter(product.category_slug for product in PRODUCTS)
+
+    assert counts == {"sneakers": 5, "streetwear": 5, "collectibles": 5}
+    assert all(product.name.strip() for product in PRODUCTS)
+    assert all(product.image_url and product.image_url.startswith("http") for product in PRODUCTS)
+    assert all(product.lowest_ask_cents is not None and product.lowest_ask_cents > 0 for product in PRODUCTS)
+
+
+def test_seed_purchase_option_metadata_is_unique() -> None:
+    seed_skus = [product.seed_sku for product in PRODUCTS]
+
+    assert len(seed_skus) == 15
+    assert len(seed_skus) == len(set(seed_skus))
+    assert all(sku.startswith(SEED_SKU_PREFIX) for sku in seed_skus)
+    assert {product.seed_size for product in PRODUCTS} == {"10", "M", "One Size"}
+
+
+def test_seed_cli_accepts_optional_inventory_owner() -> None:
+    assert parse_args([]).inventory_owner_email is None
+    assert parse_args(["--inventory-owner-email", "Admin@Example.com"]).inventory_owner_email == "Admin@Example.com"
+
+
+def prepare_seed_catalog(session: Session) -> None:
+    upsert_categories(session)
+    upsert_products(session)
+    session.flush()
+
+
+def test_inventory_seed_requires_an_existing_admin(db_session: Session) -> None:
+    prepare_seed_catalog(db_session)
+    customer = User(name="Customer", email="customer@example.com", password_hash="not-used")
+    db_session.add(customer)
+    db_session.flush()
+
+    with pytest.raises(SeedInventoryOwnerError, match="not found"):
+        upsert_seed_inventory(db_session, owner_email="missing@example.com")
+    with pytest.raises(SeedInventoryOwnerError, match="must be an admin"):
+        upsert_seed_inventory(db_session, owner_email=" CUSTOMER@EXAMPLE.COM ")
+
+    assert db_session.scalar(select(func.count()).select_from(Listing)) == 0
+
+
+def test_inventory_seed_is_idempotent_and_preserves_unrelated_inventory(db_session: Session) -> None:
+    prepare_seed_catalog(db_session)
+    owner = User(name="Store Admin", email="admin@example.com", password_hash="not-used", is_admin=True)
+    db_session.add(owner)
+    db_session.flush()
+
+    seeded_product = db_session.scalar(select(Product).where(Product.slug == PRODUCTS[0].slug))
+    assert seeded_product is not None
+    unrelated_variant = ProductVariant(product_id=seeded_product.id, size="11", color="Red", sku="ADMIN-CUSTOM-SKU")
+    db_session.add(unrelated_variant)
+    db_session.flush()
+    unrelated_listing = Listing(
+        user_id=owner.id,
+        product_id=seeded_product.id,
+        product_variant_id=unrelated_variant.id,
+        price_cents=99900,
+        available_quantity=3,
+        currency="USD",
+        status="active",
+    )
+    db_session.add(unrelated_listing)
+    db_session.flush()
+
+    upsert_seed_inventory(db_session, owner_email=" ADMIN@EXAMPLE.COM ")
+    db_session.flush()
+    upsert_seed_inventory(db_session, owner_email="admin@example.com")
+    db_session.flush()
+
+    variants = list(db_session.scalars(select(ProductVariant).where(ProductVariant.sku.startswith(SEED_SKU_PREFIX))).all())
+    variant_ids = [variant.id for variant in variants]
+    listings = list(
+        db_session.scalars(
+            select(Listing).where(Listing.user_id == owner.id, Listing.product_variant_id.in_(variant_ids))
+        ).all()
+    )
+
+    assert len(variants) == 15
+    assert len(listings) == 15
+    assert all(listing.available_quantity == SEED_INVENTORY_QUANTITY for listing in listings)
+    assert all(listing.currency == "USD" and listing.status == "active" for listing in listings)
+    assert {listing.price_cents for listing in listings} == {
+        product.lowest_ask_cents for product in PRODUCTS
+    }
+    assert db_session.get(Listing, unrelated_listing.id) is unrelated_listing
+    assert unrelated_listing.available_quantity == 3
+    assert unrelated_listing.price_cents == 99900
