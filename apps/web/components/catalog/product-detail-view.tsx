@@ -82,7 +82,7 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
     try {
       await api.addCartItem(accessToken, selectedOption.id);
       if (intent === "buy") {
-        router.push("/account?checkout=1#cart");
+        router.push("/checkout");
         return;
       }
       setActionMessage("Added to your cart.");

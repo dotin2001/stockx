@@ -12,6 +12,7 @@ import type {
   AuthResponse,
   Cart,
   CartMergeResponse,
+  CheckoutSummary,
   Category,
   CustomerMessageCreatePayload,
   CustomerMessagePage,
@@ -25,6 +26,9 @@ import type {
   ListingRead,
   ListingStatusUpdatePayload,
   LoginPayload,
+  Order,
+  OrderCreatePayload,
+  OrderPage,
   ProductDetail,
   ProductDiscoveryQueryParams,
   ProductPage,
@@ -61,6 +65,7 @@ type RequestOptions = {
   accessToken?: string | null;
   credentials?: RequestCredentials;
   cache?: RequestCache;
+  headers?: Record<string, string>;
 };
 
 async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -72,6 +77,9 @@ async function apiRequest<T>(path: string, options: RequestOptions = {}): Promis
   }
   if (options.accessToken) {
     headers.set("Authorization", `Bearer ${options.accessToken}`);
+  }
+  for (const [name, value] of Object.entries(options.headers ?? {})) {
+    headers.set(name, value);
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -236,6 +244,25 @@ export const api = {
   removeCartItem: (accessToken: string, itemId: UUID) =>
     apiRequest<void>(`/api/v1/cart/items/${itemId}`, {
       method: "DELETE",
+      accessToken
+    }),
+  getCheckoutSummary: (accessToken: string) =>
+    apiRequest<CheckoutSummary>("/api/v1/checkout/summary", {
+      accessToken
+    }),
+  createOrder: (accessToken: string, idempotencyKey: string, payload: OrderCreatePayload) =>
+    apiRequest<Order>("/api/v1/orders", {
+      method: "POST",
+      body: payload,
+      accessToken,
+      headers: { "Idempotency-Key": idempotencyKey }
+    }),
+  listOrders: (accessToken: string, limit = 20, offset = 0) =>
+    apiRequest<OrderPage>(`/api/v1/orders?limit=${limit}&offset=${offset}`, {
+      accessToken
+    }),
+  getOrder: (accessToken: string, orderId: UUID) =>
+    apiRequest<Order>(`/api/v1/orders/${orderId}`, {
       accessToken
     }),
   listCustomerMessages: (accessToken: string, limit = 20, offset = 0) =>

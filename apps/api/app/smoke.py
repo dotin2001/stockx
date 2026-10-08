@@ -491,6 +491,87 @@ def smoke_cart(client: httpx.Client, access_token: str, listing_id: str) -> None
     assert_equal(merged_cart.get("total_quantity"), 2, "Merged guest cart quantity mismatch.")
 
 
+def smoke_checkout_orders(client: httpx.Client, access_token: str, listing_id: str) -> None:
+    headers = {"Authorization": f"Bearer {access_token}"}
+    summary_response = request(client, "GET", "/api/v1/checkout/summary", headers=headers)
+    assert_status(summary_response, 200, "GET /api/v1/checkout/summary")
+    summary = response_json(summary_response, "checkout summary")
+    if not isinstance(summary, dict):
+        fail("Checkout summary should be an object.")
+    if summary.get("order_placement_enabled") is not True:
+        fail(
+            "Manual checkout is disabled. Start the API with CHECKOUT_MODE=manual "
+            "before running the checkout/order smoke workflow."
+        )
+    checkout_token = summary.get("checkout_token")
+    if not isinstance(checkout_token, str) or not checkout_token:
+        fail("Checkout summary should include a checkout token.")
+    summary_items = summary.get("items")
+    if not isinstance(summary_items, list) or len(summary_items) != 1:
+        fail("Checkout summary should include the cart line prepared by the smoke workflow.")
+    assert_equal(summary_items[0].get("listing_id"), listing_id, "Checkout listing mismatch.")
+
+    created_response = request(
+        client,
+        "POST",
+        "/api/v1/orders",
+        headers={**headers, "Idempotency-Key": f"smoke-{uuid4()}"},
+        json={
+            "checkout_token": checkout_token,
+            "shipping": {
+                "recipient_name": "API Smoke User",
+                "contact_email": "smoke-order@example.test",
+                "contact_phone": "+1 555 555 0101",
+                "address_line1": "123 Smoke Test Way",
+                "address_line2": None,
+                "city": "San Francisco",
+                "state": "CA",
+                "postal_code": "94105",
+                "country": "US",
+            },
+        },
+    )
+    assert_status(created_response, 201, "POST /api/v1/orders")
+    created = response_json(created_response, "created order")
+    if not isinstance(created, dict):
+        fail("Created order should be an object.")
+    order_id = created.get("id")
+    if not isinstance(order_id, str) or not order_id:
+        fail("Created order should include an id.")
+    assert_equal(created.get("status"), "confirmed", "Created order status mismatch.")
+    assert_equal(created.get("payment_status"), "unpaid", "Created order payment status mismatch.")
+    if not isinstance(created.get("items"), list) or created["items"][0].get("listing_id") != listing_id:
+        fail("Created order should preserve the purchased listing snapshot.")
+
+    cart_after = request(client, "GET", "/api/v1/cart", headers=headers)
+    assert_status(cart_after, 200, "GET /api/v1/cart after checkout")
+    cart_body = response_json(cart_after, "cart after checkout")
+    if not isinstance(cart_body, dict):
+        fail("Cart after checkout should be an object.")
+    assert_equal(cart_body.get("items"), [], "Checkout should clear purchased cart rows.")
+
+    history_response = request(client, "GET", "/api/v1/orders", headers=headers)
+    assert_status(history_response, 200, "GET /api/v1/orders")
+    history = response_json(history_response, "order history")
+    if not isinstance(history, dict) or not any(item.get("id") == order_id for item in history.get("items", []) if isinstance(item, dict)):
+        fail("Created order was not visible in customer order history.")
+
+    detail_response = request(client, "GET", f"/api/v1/orders/{order_id}", headers=headers)
+    assert_status(detail_response, 200, "GET /api/v1/orders/{id}")
+    detail = response_json(detail_response, "order detail")
+    if not isinstance(detail, dict) or detail.get("shipping", {}).get("city") != "San Francisco":
+        fail("Order detail should preserve the shipping snapshot.")
+
+    other_token, _refresh = smoke_auth(client, unique_user())
+    hidden = request(
+        client,
+        "GET",
+        f"/api/v1/orders/{order_id}",
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert_status(hidden, 404, "Cross-user GET /api/v1/orders/{id}")
+
+
 def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str:
     admin = unique_admin_user()
     admin_token, _refresh_token = smoke_auth(client, admin)
@@ -684,6 +765,7 @@ def run_smoke(base_url: str, timeout: float) -> None:
         listing_id = smoke_admin_product_management(client, product_id)
         smoke_protected_marketplace(client, access_token, product_id)
         smoke_cart(client, access_token, listing_id)
+        smoke_checkout_orders(client, access_token, listing_id)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

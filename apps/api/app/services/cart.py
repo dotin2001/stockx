@@ -11,6 +11,7 @@ from app.api.errors import APIError
 from app.models import CartItem, Listing, Product, User
 from app.schemas.cart import CartItemRead, CartListingRead, GuestCartItemRead, GuestCartSkippedItem
 from app.services.integrity import matches_integrity_target
+from app.services.customer_lock import lock_customer_row
 
 
 CART_ITEM_LOAD_OPTIONS = (
@@ -81,7 +82,16 @@ def list_cart_items(db: Session, *, user: User) -> list[CartItem]:
     return list(db.scalars(_cart_item_query(user)).all())
 
 
-def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -> CartItem:
+def add_cart_item(
+    db: Session,
+    *,
+    user: User,
+    listing_id: UUID,
+    quantity: int,
+    _customer_locked: bool = False,
+) -> CartItem:
+    if not _customer_locked:
+        lock_customer_row(db, user.id)
     user_id = user.id
     listing = _load_listing(db, listing_id)
 
@@ -120,6 +130,7 @@ def add_cart_item(db: Session, *, user: User, listing_id: UUID, quantity: int) -
 
 
 def update_cart_item(db: Session, *, user: User, item_id: UUID, quantity: int) -> CartItem:
+    lock_customer_row(db, user.id)
     item = _load_user_cart_item(db, user=user, item_id=item_id)
     _require_listing_available(item.listing, quantity=quantity)
     item.quantity = quantity
@@ -128,6 +139,7 @@ def update_cart_item(db: Session, *, user: User, item_id: UUID, quantity: int) -
 
 
 def remove_cart_item(db: Session, *, user: User, item_id: UUID) -> None:
+    lock_customer_row(db, user.id)
     item = _load_user_cart_item(db, user=user, item_id=item_id)
     db.delete(item)
 
@@ -159,6 +171,7 @@ def resolve_guest_cart_items(db: Session, *, items: list[tuple[UUID, int]]) -> t
 
 
 def merge_guest_cart_items(db: Session, *, user: User, items: list[tuple[UUID, int]]) -> tuple[list[CartItem], list[GuestCartSkippedItem]]:
+    lock_customer_row(db, user.id)
     skipped: list[GuestCartSkippedItem] = []
     for listing_id, quantity in items:
         listing = db.scalar(select(Listing).where(Listing.id == listing_id).options(*LISTING_LOAD_OPTIONS))
@@ -171,7 +184,7 @@ def merge_guest_cart_items(db: Session, *, user: User, items: list[tuple[UUID, i
             skipped.append(GuestCartSkippedItem(listing_id=listing.id, quantity=quantity, reason=reason))
             continue
 
-        add_cart_item(db, user=user, listing_id=listing.id, quantity=quantity)
+        add_cart_item(db, user=user, listing_id=listing.id, quantity=quantity, _customer_locked=True)
     return list_cart_items(db, user=user), skipped
 
 

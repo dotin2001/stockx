@@ -386,6 +386,96 @@ export type CartMergeResponse = {
   skipped: GuestCartSkippedItem[];
 };
 
+export type CheckoutMode = "disabled" | "manual";
+export type OrderStatus = "pending_payment" | "confirmed" | "cancelled";
+export type PaymentStatus = "unpaid" | "paid" | "failed" | "refunded";
+
+export type ShippingAddress = {
+  recipient_name: string;
+  contact_email: string;
+  contact_phone: string;
+  address_line1: string;
+  address_line2?: string | null;
+  city: string;
+  state?: string | null;
+  postal_code: string;
+  country: string;
+};
+
+export type CheckoutItem = {
+  cart_item_id: UUID;
+  listing_id: UUID;
+  product_id: UUID;
+  product_variant_id: UUID | null;
+  product_name: string;
+  product_slug: string;
+  product_image_url: string | null;
+  variant_label: string | null;
+  quantity: number;
+  unit_price_cents: number;
+  line_total_cents: number;
+};
+
+export type CheckoutSummary = {
+  items: CheckoutItem[];
+  currency: string;
+  subtotal_cents: number;
+  shipping_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  checkout_mode: CheckoutMode;
+  order_placement_enabled: boolean;
+  checkout_token: string;
+};
+
+export type OrderCreatePayload = {
+  checkout_token: string;
+  shipping: ShippingAddress;
+};
+
+export type OrderItem = {
+  id: UUID;
+  listing_id: UUID | null;
+  product_id: UUID | null;
+  product_variant_id: UUID | null;
+  product_name: string;
+  product_slug: string;
+  product_image_url: string | null;
+  variant_label: string | null;
+  variant_sku: string | null;
+  variant_size: string | null;
+  variant_color: string | null;
+  quantity: number;
+  unit_price_cents: number;
+  line_total_cents: number;
+};
+
+export type Order = {
+  id: UUID;
+  order_number: string;
+  status: OrderStatus;
+  payment_status: PaymentStatus;
+  currency: string;
+  subtotal_cents: number;
+  shipping_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  customer_name: string;
+  customer_email: string;
+  shipping: ShippingAddress;
+  items: OrderItem[];
+  confirmed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OrderPage = {
+  items: Order[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type CustomerMessageCreatePayload = {
   subject: string;
   body: string;

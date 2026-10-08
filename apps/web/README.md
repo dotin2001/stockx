@@ -51,11 +51,21 @@ pagination still come from the backend API.
 /login
 /signup
 /account
+/checkout
+/orders
+/orders/[id]
 /sell
 /admin/messages
 /admin/products
 /admin/products/new
 ```
+
+`/checkout`, `/orders`, and `/orders/[id]` are authenticated customer routes.
+Guest checkout preserves `/checkout` as the post-authentication destination so
+the existing guest-cart merge completes first. The checkout page can always
+review an available account cart; confirmation is enabled only when the API is
+running with `CHECKOUT_MODE=manual`. Manual confirmations are clearly shown as
+unpaid and expose no payment, cancellation, refund, or fulfillment controls.
 
 `/admin/products` is the primary product management route for authenticated
 admins. It lists active and archived catalog products, exposes catalog edit and

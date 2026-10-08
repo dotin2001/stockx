@@ -25,14 +25,11 @@ export function AccountDashboard() {
   const [cart, setCart] = useState<Cart | null>(null);
   const [messages, setMessages] = useState<CustomerMessageRead[]>([]);
   const [mutating, setMutating] = useState<string | null>(null);
-  const [checkoutVisible, setCheckoutVisible] = useState(false);
   const [mergeNotice, setMergeNotice] = useState<string | null>(null);
   const [messageSuccess, setMessageSuccess] = useState<string | null>(null);
   const [messageError, setMessageError] = useState<string | null>(null);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setCheckoutVisible(params.get("checkout") === "1");
     setMergeNotice(consumeCartMergeNotice());
   }, []);
 
@@ -250,24 +247,22 @@ export function AccountDashboard() {
                   </div>
                 ))}
               </div>
-              <button
-                type="button"
-                onClick={() => setCheckoutVisible(true)}
-                className="mt-4 w-full bg-ink-900 px-4 py-3 text-sm font-bold text-white hover:bg-market-green"
-              >
+              <Link href="/checkout" className="mt-4 flex w-full justify-center bg-ink-900 px-4 py-3 text-sm font-bold text-white hover:bg-market-green">
                 Checkout
-              </button>
-              {checkoutVisible ? (
-                <p className="mt-3 border border-market-green/30 bg-market-mint px-3 py-2 text-sm font-semibold text-ink-800">
-                  Checkout is not available yet. Your cart is saved while payment, orders, and fulfillment are being built.
-                </p>
-              ) : null}
+              </Link>
             </>
           ) : (
             <EmptyState title="Cart is empty" message="Add active store products to your cart." href="/category/sneakers" />
           )}
         </section>
       </div>
+      <section className="surface flex flex-wrap items-center justify-between gap-4 p-5">
+        <div>
+          <h2 className="text-lg font-black">Order history</h2>
+          <p className="mt-1 text-sm text-ink-500">Review confirmed orders and their saved purchase details.</p>
+        </div>
+        <Link href="/orders" className="border border-ink-900 px-4 py-2 text-sm font-bold hover:bg-ink-900 hover:text-white">View orders</Link>
+      </section>
       <section className="surface grid gap-5 p-5">
         <div>
           <p className="text-sm font-bold uppercase tracking-wide text-market-green">Message Admin</p>

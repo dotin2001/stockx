@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
@@ -18,18 +18,16 @@ function cartWithItems(items: CartItem[]): Cart {
 }
 
 function authRedirect() {
-  return `/login?redirect=${encodeURIComponent("/account?checkout=1#cart")}`;
+  return `/login?redirect=${encodeURIComponent("/checkout")}`;
 }
 
 export function CartPageClient() {
   const router = useRouter();
-  const params = useSearchParams();
   const { status, accessToken } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cart, setCart] = useState<Cart | null>(null);
   const [guestCart, setGuestCart] = useState<GuestCartRead | null>(null);
-  const [checkoutVisible, setCheckoutVisible] = useState(params.get("checkout") === "1");
   const [mutating, setMutating] = useState<string | null>(null);
 
   const loadGuestCart = useCallback(async () => {
@@ -126,7 +124,7 @@ export function CartPageClient() {
       router.push(authRedirect());
       return;
     }
-    setCheckoutVisible(true);
+    router.push("/checkout");
   }
 
   if (status === "checking" || loading) {
@@ -195,11 +193,6 @@ export function CartPageClient() {
           </button>
           {!isAuthenticated ? (
             <p className="border border-ink-200 bg-ink-50 px-3 py-2 text-sm font-semibold text-ink-600">Login or sign up to continue checkout. Your cart will move into your account.</p>
-          ) : null}
-          {checkoutVisible && isAuthenticated ? (
-            <p className="border border-market-green/30 bg-market-mint px-3 py-2 text-sm font-semibold text-ink-800">
-              Checkout is not available yet. Your cart is saved while payment, orders, and fulfillment are being built.
-            </p>
           ) : null}
         </>
       )}

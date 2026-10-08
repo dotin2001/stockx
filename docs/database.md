@@ -27,6 +27,10 @@ Initial tables:
 - `product_variants`: optional size, color, and SKU per product.
 - `listings`: user-owned product listings with integer `price_cents`, non-negative `available_quantity`, currency, and status.
 - `watchlist_items`: unique `(user_id, product_id)` watch records.
+- `orders`: customer-scoped idempotency, immutable customer/shipping snapshots,
+  confirmed/payment state, integer-cent totals, and a unique public number.
+- `order_items`: immutable catalog/variant/quantity/price snapshots with
+  nullable source references; source deletion does not erase order history.
 
 The foundation deliberately stores admin access as boolean flags instead of a text access-level column. New users default to customer access with both flags false. Normal admins use `is_admin`; supreme admins are operator-granted users with both `is_admin` and `is_supreme_admin` true.
 
@@ -45,6 +49,10 @@ alembic downgrade base
 ```
 
 The initial migration creates the foundation tables, foreign keys, unique constraints, timestamp columns, integer money columns, and the PostgreSQL `pgcrypto` extension used by UUID defaults.
+
+The checkout-order migration is intentionally reversible for local development,
+but its downgrade drops retained order history. Disable checkout and back up any
+orders that must be retained before downgrading below revision `202610080001`.
 
 ## Seed Data
 

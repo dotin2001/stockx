@@ -52,6 +52,7 @@ class User(TimestampMixin, Base):
         cascade="all, delete-orphan",
     )
     cart_items = relationship("CartItem", back_populates="user", cascade="all, delete-orphan")
+    orders = relationship("Order", back_populates="user")
 
     @property
     def is_seller(self) -> bool:

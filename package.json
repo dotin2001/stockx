@@ -14,6 +14,7 @@
     "lazy:test": "node --test tests/lazy-cli.test.mjs",
     "web:smoke:admin-products": "node --test tests/admin-product-create-form.test.mjs",
     "web:smoke:store-flow": "node --test tests/store-flow-source.test.mjs",
+    "web:smoke:checkout-orders": "node --test tests/checkout-order-source.test.mjs",
     "web:dev": "npm run dev --workspace apps/web",
     "web:lint": "npm run lint --workspace apps/web",
     "web:build": "npm run build --workspace apps/web",

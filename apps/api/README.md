@@ -29,11 +29,17 @@ REFRESH_COOKIE_NAME=stockx_refresh
 REFRESH_COOKIE_SECURE=false
 REFRESH_COOKIE_SAMESITE=lax
 CORS_ORIGINS=http://localhost:3000
+CHECKOUT_MODE=disabled
 ```
 
 `DATABASE_URL` is consumed by the FastAPI app, Alembic, and seed command. The
 `POSTGRES_*` variables in `.env.example` are for Docker Compose's PostgreSQL
 container and are intentionally ignored by the API settings loader.
+
+`CHECKOUT_MODE` accepts only `disabled` and `manual` and defaults to
+`disabled`. Use `CHECKOUT_MODE=manual` only for local development when you
+explicitly want confirmation to create an unpaid order and consume inventory.
+No payment provider is contacted by manual checkout.
 
 ## Migrations
 
@@ -108,7 +114,16 @@ DELETE /api/v1/cart/items/{id}
 GET    /api/v1/messages
 POST   /api/v1/messages
 GET    /api/v1/messages/{id}
+GET    /api/v1/checkout/summary
+POST   /api/v1/orders
+GET    /api/v1/orders
+GET    /api/v1/orders/{id}
 ```
+
+`POST /api/v1/orders` requires an `Idempotency-Key` header. The request body
+contains the server-issued checkout token plus recipient/contact/address data;
+product lines and totals are always recalculated from the current account cart.
+Orders created in manual mode are `confirmed` and `unpaid`.
 
 Guests can browse public catalog data and add active sellable items to a guest
 cart. Watchlist and message-admin actions require an authenticated customer.
@@ -216,6 +231,10 @@ Optional destructive local rollback:
 alembic downgrade base
 ```
 
+The checkout migration adds `orders` and `order_items`. Disable checkout and
+back up any order data that must be retained before downgrading past that
+revision because the downgrade drops those tables.
+
 The default `pytest` suite uses in-process test clients and does not require a
 running API server.
 
@@ -225,8 +244,9 @@ Use the smoke test when you want to verify the running FastAPI service,
 PostgreSQL-backed seed data, refresh cookies, auth flows, admin-created store
 listings, guest/authenticated cart behavior, authenticated watchlist/customer
 messages, admin bootstrap, admin
-listing management, and admin archive/restore behavior through real HTTP
-requests.
+listing management, admin archive/restore behavior, manual checkout, inventory
+decrement, cart clearing, order history/detail, and cross-user nondisclosure
+through real HTTP requests.
 
 From the repository root, start PostgreSQL:
 
@@ -240,7 +260,7 @@ Prepare the database and start the API:
 cd apps/api
 alembic upgrade head
 python -m app.db.seed
-uvicorn app.main:app --reload
+CHECKOUT_MODE=manual uvicorn app.main:app --reload
 ```
 
 In a second terminal:
@@ -284,6 +304,13 @@ Common smoke-test failures:
   `python -m app.db.seed` against the same database used by the running API.
 - Refresh cookie assertions fail over local HTTP: confirm
   `REFRESH_COOKIE_SECURE=false`.
+- Manual checkout prerequisite failure: restart the API with
+  `CHECKOUT_MODE=manual`. The smoke flow intentionally fails when order
+  placement remains disabled.
+
+Stripe Checkout Sessions, charges, payment attempts, webhooks, refunds, and
+fulfillment remain deferred. The order foundation is provider-independent and
+the manual local flow never represents an order as paid.
 
 Quick manual API smoke:
 

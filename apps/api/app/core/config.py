@@ -1,7 +1,13 @@
+from enum import StrEnum
 from typing import Any
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class CheckoutMode(StrEnum):
+    DISABLED = "disabled"
+    MANUAL = "manual"
 
 
 class Settings(BaseSettings):
@@ -13,6 +19,7 @@ class Settings(BaseSettings):
     refresh_cookie_secure: bool = False
     refresh_cookie_samesite: str = "lax"
     cors_origins: list[str] = []
+    checkout_mode: CheckoutMode = CheckoutMode.DISABLED
 
     @field_validator("cors_origins", mode="before")
     @classmethod
