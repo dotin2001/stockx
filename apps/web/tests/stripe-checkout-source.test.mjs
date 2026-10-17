@@ -15,6 +15,14 @@ test("Stripe session calls are authenticated and idempotent", () => {
   assert.match(api, /cancelPendingPayment: \(accessToken: string, orderId: UUID\)/);
 });
 
+test("local API calls keep the frontend hostname so refresh cookies survive Stripe redirects", () => {
+  const api = source("lib/api.ts");
+  const auth = source("contexts/auth-context.tsx");
+  assert.match(api, /window\.location\.hostname/);
+  assert.match(api, /credentials: options\.credentials/);
+  assert.match(auth, /api\.refresh\(\)/);
+});
+
 test("checkout redirects only from the returned hosted session and guards duplicate submit", () => {
   const checkout = source("components/checkout/checkout-page-client.tsx");
   assert.match(checkout, /summary\.checkout_mode === "stripe"/);
@@ -26,7 +34,12 @@ test("checkout redirects only from the returned hosted session and guards duplic
 test("order return messaging depends on authenticated order state", () => {
   const detail = source("components/orders/order-detail-client.tsx");
   assert.match(detail, /api\.getOrder\(accessToken, orderId\)/);
-  assert.match(detail, /order\.payment_status !== "paid"/);
+  assert.match(detail, /order\.payment_status === "paid"/);
+  assert.match(detail, /order\.payment_status === "failed"/);
+  assert.match(detail, /Payment successful/);
+  assert.match(detail, /Payment unsuccessful/);
+  assert.match(detail, /Confirming your payment/);
+  assert.match(detail, /Checkout not completed/);
   assert.match(detail, /return URL itself does not prove payment/);
   assert.match(detail, /RETURN_POLL_LIMIT = 10/);
   assert.match(detail, /Resume Payment/);

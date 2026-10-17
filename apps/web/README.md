@@ -21,11 +21,18 @@ the instructions in `apps/api/README.md`.
 ## Environment
 
 Create `apps/web/.env.local` when the API is not running at the default local
-URL:
+URL. By default the frontend uses its current hostname with port `8000`, so
+`http://localhost:3000` calls `http://localhost:8000` and
+`http://127.0.0.1:3000` calls `http://127.0.0.1:8000`:
 
 ```text
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
+
+Keep the frontend and API hostnames aligned (`localhost` with `localhost`, or
+`127.0.0.1` with `127.0.0.1`). The refresh token is an HTTP-only cookie, and
+matching hostnames allow the authenticated session to be restored after Stripe
+redirects the browser back to the storefront.
 
 The backend should allow the frontend origin in `CORS_ORIGINS`, for example:
 

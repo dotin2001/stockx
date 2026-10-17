@@ -5,12 +5,67 @@ import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
 import { api, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
-import type { Order } from "@/lib/types";
+import type { Order, PaymentAttempt } from "@/lib/types";
 import { ErrorState, LoadingState } from "@/components/ui/states";
 import { latestPaymentAttempt, OrderPaymentStatus } from "@/components/orders/order-payment-status";
 
 const RETURN_POLL_INTERVAL_MS = 2000;
 const RETURN_POLL_LIMIT = 10;
+
+type PaymentReturnNotice = {
+  title: string;
+  message: string;
+  tone: "green" | "amber" | "red";
+};
+
+const RETURN_NOTICE_CLASSES: Record<PaymentReturnNotice["tone"], string> = {
+  green: "border-market-green/30 bg-market-mint text-ink-900",
+  amber: "border-amber-300 bg-amber-50 text-amber-900",
+  red: "border-market-red/30 bg-red-50 text-market-red"
+};
+
+function getPaymentReturnNotice(
+  order: Order,
+  attempt: PaymentAttempt | null,
+  returnedFromStripe: boolean,
+  returnedFromCancelPage: boolean
+): PaymentReturnNotice | null {
+  if (!returnedFromStripe && !returnedFromCancelPage) return null;
+
+  if (order.payment_status === "paid" || attempt?.status === "paid") {
+    return {
+      title: "Payment successful",
+      message: "Your payment was verified and this order is confirmed.",
+      tone: "green"
+    };
+  }
+
+  if (
+    order.payment_status === "failed" ||
+    order.status === "cancelled" ||
+    (attempt != null && ["failed", "expired", "cancelled"].includes(attempt.status))
+  ) {
+    return {
+      title: "Payment unsuccessful",
+      message: "Payment was not completed. Any reserved inventory has been released.",
+      tone: "red"
+    };
+  }
+
+  if (returnedFromCancelPage) {
+    return {
+      title: "Checkout not completed",
+      message: "You left Stripe Checkout without a verified payment. Resume payment or cancel the pending order below.",
+      tone: "amber"
+    };
+  }
+
+  return {
+    title: "Confirming your payment",
+    message: "We are waiting for verified payment confirmation. This page refreshes briefly; the return URL itself does not prove payment.",
+    tone: "amber"
+  };
+}
 
 export function OrderDetailClient({ orderId }: { orderId: string }) {
   const { accessToken } = useAuth();
@@ -64,6 +119,10 @@ export function OrderDetailClient({ orderId }: { orderId: string }) {
   }, [accessToken, loadOrder, returnedFromStripe]);
 
   const attempt = useMemo(() => order ? latestPaymentAttempt(order) : null, [order]);
+  const returnNotice = useMemo(
+    () => order ? getPaymentReturnNotice(order, attempt, returnedFromStripe, returnedFromCancelPage) : null,
+    [attempt, order, returnedFromCancelPage, returnedFromStripe]
+  );
   const canResume = order?.status === "pending_payment" && attempt?.status === "open";
   const canCancel = order?.status === "pending_payment" && attempt != null && ["initializing", "open", "processing"].includes(attempt.status);
 
@@ -104,12 +163,12 @@ export function OrderDetailClient({ orderId }: { orderId: string }) {
       <div className="grid gap-5">
         <div className="surface p-6">
           {params.get("created") === "1" && order.status === "confirmed" ? <p className="text-sm font-bold uppercase tracking-wide text-market-green">Order confirmed</p> : null}
-          {returnedFromStripe ? <p className="text-sm font-bold uppercase tracking-wide text-market-green">Returned from secure checkout</p> : null}
-          {returnedFromCancelPage ? <p className="text-sm font-bold uppercase tracking-wide text-amber-700">You left Stripe Checkout</p> : null}
+          {returnNotice ? <div role={returnNotice.tone === "red" ? "alert" : "status"} aria-live={returnNotice.tone === "red" ? "assertive" : "polite"} className={`mb-4 border px-4 py-3 ${RETURN_NOTICE_CLASSES[returnNotice.tone]}`}>
+            <p className="font-black">{returnNotice.title}</p>
+            <p className="mt-1 text-sm font-medium">{returnNotice.message}</p>
+          </div> : null}
           <h1 className="mt-2 text-3xl font-black">{order.order_number}</h1>
           <p className="mt-2 text-sm text-ink-500">{order.confirmed_at ? `Confirmed ${new Date(order.confirmed_at).toLocaleString()}` : `Created ${new Date(order.created_at).toLocaleString()}`}</p>
-          {returnedFromStripe && order.payment_status !== "paid" ? <p className="mt-4 text-sm text-ink-600">We are waiting for verified payment confirmation. This page refreshes briefly; the return URL itself does not prove payment.</p> : null}
-          {returnedFromCancelPage && order.status === "pending_payment" ? <p className="mt-4 text-sm text-ink-600">Leaving Stripe did not cancel this reservation. Resume payment or explicitly cancel the pending order below.</p> : null}
           <div className="mt-4"><OrderPaymentStatus order={order} /></div>
           {error ? <p className="mt-4 border border-market-red/30 bg-red-50 px-3 py-2 text-sm font-semibold text-market-red">{error}</p> : null}
           {canResume || canCancel ? <div className="mt-4 flex flex-wrap gap-3">

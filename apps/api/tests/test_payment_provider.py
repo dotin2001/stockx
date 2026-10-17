@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import stripe
+
 from app.payments import (
     CheckoutSessionLineItem,
     CheckoutSessionRequest,
@@ -43,11 +45,14 @@ class SessionsStub:
             "currency": "usd",
             "livemode": False,
             "expires_at": 1791549000,
-            "metadata": {
-                "order_id": "order-123",
-                "payment_attempt_id": "attempt-123",
-                "correlation_id": "correlation-123",
-            },
+            "metadata": stripe.StripeObject.construct_from(
+                {
+                    "order_id": "order-123",
+                    "payment_attempt_id": "attempt-123",
+                    "correlation_id": "correlation-123",
+                },
+                "sk_test_example",
+            ),
         }
 
     def create(self, params: dict, options: dict) -> dict:
@@ -112,6 +117,7 @@ def test_stripe_adapter_uses_authoritative_session_contract() -> None:
     assert created.amount_total_cents == 3000
     assert created.currency == "USD"
     assert created.payment_intent_id == "pi_123"
+    assert created.metadata == params["metadata"]
 
     assert provider.retrieve_session(created.id).id == created.id
     assert provider.expire_session(created.id).status == "expired"

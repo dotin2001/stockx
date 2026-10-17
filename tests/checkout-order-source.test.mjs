@@ -20,15 +20,18 @@ test("checkout uses server summary, stable idempotency, disabled messaging, and 
   assert.match(api, /"Idempotency-Key"/);
 });
 
-test("order history and detail expose read-only confirmed unpaid snapshots", () => {
+test("order history and detail expose server-backed payment snapshots", () => {
   assert.match(history, /api\.listOrders/);
   assert.match(history, /Previous/);
   assert.match(history, /Next/);
   assert.match(history, /No orders yet/);
   assert.match(detail, /api\.getOrder/);
-  assert.match(detail, /Payment status: Unpaid/);
+  assert.match(detail, /OrderPaymentStatus/);
+  assert.match(detail, /Payment successful/);
+  assert.match(detail, /Payment unsuccessful/);
+  assert.match(detail, /return URL itself does not prove payment/);
   assert.match(detail, /Shipping snapshot/);
-  assert.doesNotMatch(detail, /Pay now|Cancel order|Refund|Ship order/);
+  assert.doesNotMatch(detail, /Refund|Ship order/);
 });
 
 test("cart and account navigate to dedicated checkout and order history", () => {

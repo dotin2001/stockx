@@ -81,7 +81,10 @@ class StripeCheckoutSessionProvider:
 
     @staticmethod
     def _to_session(session: Any) -> ProviderCheckoutSession:
-        metadata = dict(_value(session, "metadata", {}) or {})
+        metadata_value = _value(session, "metadata", {}) or {}
+        if hasattr(metadata_value, "to_dict"):
+            metadata_value = metadata_value.to_dict()
+        metadata = dict(metadata_value)
         expires_at = _value(session, "expires_at")
         if expires_at is None:
             raise PaymentProviderError("Stripe response omitted session expiration", definitive=False)

@@ -45,7 +45,20 @@ import type {
   WatchlistItem
 } from "@/lib/types";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+const CONFIGURED_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+
+function resolveApiBaseUrl() {
+  if (CONFIGURED_API_BASE_URL) return CONFIGURED_API_BASE_URL;
+
+  // Keep the API and frontend on the same hostname in local development.
+  // This lets the browser send the HTTP-only refresh cookie after returning
+  // from a full-page redirect such as Stripe Checkout.
+  if (typeof window !== "undefined") {
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+
+  return "http://localhost:8000";
+}
 
 export class ApiError extends Error {
   code: string;
@@ -84,7 +97,7 @@ async function apiRequest<T>(path: string, options: RequestOptions = {}): Promis
     headers.set(name, value);
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(`${resolveApiBaseUrl()}${path}`, {
     method: options.method ?? "GET",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -403,5 +416,5 @@ export const api = {
 };
 
 export function getApiBaseUrl() {
-  return API_BASE_URL;
+  return resolveApiBaseUrl();
 }
