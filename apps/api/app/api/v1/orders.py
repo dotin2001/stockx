@@ -4,8 +4,10 @@ from uuid import UUID
 from fastapi import APIRouter, Header, Query, status
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import CurrentUser, DbSession
-from app.schemas.order import OrderCreateRequest, OrderPage, OrderRead
+from app.api.deps import CheckoutProvider, CurrentUser, DbSession
+from app.api.errors import APIError
+from app.schemas.order import OrderCreateRequest, OrderPage, OrderRead, PaymentCancellationRead, PaymentSessionRead
+from app.services import payment_checkout
 from app.services import orders as order_service
 from app.services.integrity import matches_integrity_target
 
@@ -67,3 +69,29 @@ def list_orders(
 @router.get("/{order_id}", response_model=OrderRead)
 def get_order(order_id: UUID, current_user: CurrentUser, db: DbSession) -> OrderRead:
     return order_service.get_order(db, user=current_user, order_id=order_id)
+
+
+@router.get("/{order_id}/payment-session", response_model=PaymentSessionRead)
+def get_payment_session(order_id: UUID, current_user: CurrentUser, db: DbSession) -> PaymentSessionRead:
+    return payment_checkout.get_resumable_payment_session(db, user=current_user, order_id=order_id)
+
+
+@router.post("/{order_id}/cancel-payment", response_model=PaymentCancellationRead)
+def cancel_payment(
+    order_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+    provider: CheckoutProvider,
+) -> PaymentCancellationRead:
+    if provider is None:
+        raise APIError(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "stripe_configuration_error",
+            "Stripe payment operations are not configured.",
+        )
+    return payment_checkout.cancel_pending_payment(
+        db,
+        user=current_user,
+        order_id=order_id,
+        provider=provider,
+    )

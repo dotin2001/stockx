@@ -29,6 +29,8 @@ import type {
   Order,
   OrderCreatePayload,
   OrderPage,
+  PaymentCancellation,
+  PaymentSession,
   ProductDetail,
   ProductDiscoveryQueryParams,
   ProductPage,
@@ -257,12 +259,28 @@ export const api = {
       accessToken,
       headers: { "Idempotency-Key": idempotencyKey }
     }),
+  createCheckoutSession: (accessToken: string, idempotencyKey: string, payload: OrderCreatePayload) =>
+    apiRequest<PaymentSession>("/api/v1/checkout/sessions", {
+      method: "POST",
+      body: payload,
+      accessToken,
+      headers: { "Idempotency-Key": idempotencyKey }
+    }),
   listOrders: (accessToken: string, limit = 20, offset = 0) =>
     apiRequest<OrderPage>(`/api/v1/orders?limit=${limit}&offset=${offset}`, {
       accessToken
     }),
   getOrder: (accessToken: string, orderId: UUID) =>
     apiRequest<Order>(`/api/v1/orders/${orderId}`, {
+      accessToken
+    }),
+  getPaymentSession: (accessToken: string, orderId: UUID) =>
+    apiRequest<PaymentSession>(`/api/v1/orders/${orderId}/payment-session`, {
+      accessToken
+    }),
+  cancelPendingPayment: (accessToken: string, orderId: UUID) =>
+    apiRequest<PaymentCancellation>(`/api/v1/orders/${orderId}/cancel-payment`, {
+      method: "POST",
       accessToken
     }),
   listCustomerMessages: (accessToken: string, limit = 20, offset = 0) =>

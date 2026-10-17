@@ -64,8 +64,16 @@ pagination still come from the backend API.
 Guest checkout preserves `/checkout` as the post-authentication destination so
 the existing guest-cart merge completes first. The checkout page can always
 review an available account cart; confirmation is enabled only when the API is
-running with `CHECKOUT_MODE=manual`. Manual confirmations are clearly shown as
-unpaid and expose no payment, cancellation, refund, or fulfillment controls.
+running with `CHECKOUT_MODE=manual` or a fully configured `stripe` mode. Manual
+confirmations are clearly shown as unpaid. Stripe mode redirects the browser to
+the server-returned `checkout.stripe.com` URL; the frontend never receives a
+secret key or raw card details.
+
+Stripe success and cancel query parameters are explanatory only. Order detail
+loads authenticated server state, briefly polls after a return, and renders
+pending, processing, paid, failed, expired, or cancelled from the order's safe
+payment-attempt summary. An open session can be resumed; cancellation is an
+explicit owner-scoped action. Returning from Stripe never marks an order paid.
 
 `/admin/products` is the primary product management route for authenticated
 admins. It lists active and archived catalog products, exposes catalog edit and
@@ -92,6 +100,7 @@ Seeded route examples:
 ```bash
 npm run web:typecheck
 npm run web:lint
+npm run web:test
 npm run web:build
 ```
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
 
 from app.core.config import CheckoutMode
 
@@ -26,6 +28,16 @@ class PaymentStatus(StrEnum):
     PAID = "paid"
     FAILED = "failed"
     REFUNDED = "refunded"
+
+
+class PaymentAttemptStatus(StrEnum):
+    INITIALIZING = "initializing"
+    OPEN = "open"
+    PROCESSING = "processing"
+    PAID = "paid"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
 
 
 class ShippingAddress(BaseModel):
@@ -95,6 +107,56 @@ class OrderCreateRequest(BaseModel):
     checkout_token: str = Field(min_length=1, max_length=255)
     shipping: ShippingAddress
 
+    model_config = ConfigDict(extra="forbid")
+
+
+class PaymentSessionCreateRequest(OrderCreateRequest):
+    pass
+
+
+class PaymentAttemptSummary(BaseModel):
+    id: UUID
+    provider: Literal["stripe"]
+    status: PaymentAttemptStatus
+    amount_cents: int = Field(gt=0)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    expires_at: datetime
+    completed_at: datetime | None = None
+    failure_code: str | None = Field(default=None, min_length=1, max_length=100, pattern=r"^[a-z0-9_]+$")
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class PaymentSessionRead(BaseModel):
+    order_id: UUID
+    payment_attempt_id: UUID
+    provider_session_id: str = Field(min_length=8, max_length=255, pattern=r"^cs_(?:test|live)_[A-Za-z0-9_]+$")
+    status: PaymentAttemptStatus
+    url: AnyHttpUrl | None
+    expires_at: datetime
+
+    @field_validator("url")
+    @classmethod
+    def require_stripe_hosted_url(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        if value is None:
+            return None
+        parsed = urlsplit(str(value))
+        if parsed.scheme != "https" or parsed.hostname != "checkout.stripe.com":
+            raise ValueError("payment session URL must be hosted by checkout.stripe.com")
+        return value
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PaymentCancellationRead(BaseModel):
+    order_id: UUID
+    order_status: OrderStatus
+    payment_status: PaymentStatus
+    attempt_status: PaymentAttemptStatus
+    inventory_released_at: datetime | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
 
 class OrderItemRead(BaseModel):
     id: UUID
@@ -129,6 +191,9 @@ class OrderRead(BaseModel):
     customer_email: str
     shipping: ShippingAddress
     items: list[OrderItemRead]
+    reservation_expires_at: datetime | None = None
+    inventory_released_at: datetime | None = None
+    payment_attempts: list[PaymentAttemptSummary] = Field(default_factory=list)
     confirmed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

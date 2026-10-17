@@ -43,7 +43,7 @@ export function CheckoutPageClient() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!accessToken || !summary || !summary.order_placement_enabled) return;
+    if (!accessToken || !summary || !summary.order_placement_enabled || submitting) return;
     const form = new FormData(event.currentTarget);
     const shipping: ShippingAddress = {
       recipient_name: String(form.get("recipient_name") ?? ""),
@@ -59,7 +59,16 @@ export function CheckoutPageClient() {
     setSubmitting(true);
     setError(null);
     try {
-      const order = await api.createOrder(accessToken, attemptKey.current, { checkout_token: summary.checkout_token, shipping });
+      const payload = { checkout_token: summary.checkout_token, shipping };
+      if (summary.checkout_mode === "stripe") {
+        const session = await api.createCheckoutSession(accessToken, attemptKey.current, payload);
+        if (!session.url) {
+          throw new Error("Stripe did not return a payment page.");
+        }
+        window.location.assign(session.url);
+        return;
+      }
+      const order = await api.createOrder(accessToken, attemptKey.current, payload);
       router.push(`/orders/${order.id}?created=1`);
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "checkout_changed") {
@@ -82,7 +91,7 @@ export function CheckoutPageClient() {
         <div>
           <p className="text-sm font-bold uppercase tracking-wide text-market-green">Checkout</p>
           <h1 className="mt-2 text-3xl font-black">Shipping details</h1>
-          <p className="mt-2 text-sm text-ink-500">This development checkout records an unpaid order. It does not collect payment.</p>
+          <p className="mt-2 text-sm text-ink-500">{summary.checkout_mode === "stripe" ? "Your order details are reviewed here before secure payment on Stripe." : "This development checkout records an unpaid order. It does not collect payment."}</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field name="recipient_name" label="Recipient name" autoComplete="name" />
@@ -99,6 +108,8 @@ export function CheckoutPageClient() {
         {stale ? <button type="button" onClick={() => void loadSummary()} className="border border-ink-900 px-4 py-3 text-sm font-bold hover:bg-ink-900 hover:text-white">Refresh summary</button> : null}
         {!summary.order_placement_enabled ? (
           <p className="border border-ink-200 bg-ink-50 px-4 py-3 text-sm font-semibold text-ink-700">Order placement is disabled. A developer can explicitly enable manual checkout for local testing.</p>
+        ) : summary.checkout_mode === "stripe" ? (
+          <p className="border border-market-green/30 bg-market-mint px-4 py-3 text-sm font-semibold text-ink-800">You will continue to Stripe&apos;s secure hosted checkout. Payment is confirmed only after verified provider notification.</p>
         ) : (
           <p className="border border-market-green/30 bg-market-mint px-4 py-3 text-sm font-semibold text-ink-800">Manual development checkout is enabled. Orders are confirmed but remain unpaid.</p>
         )}
@@ -121,7 +132,7 @@ export function CheckoutPageClient() {
           <Total label="Total" value={formatMoney(summary.total_cents, summary.currency)} strong />
         </dl>
         <button type="submit" disabled={!summary.order_placement_enabled || submitting || stale} className="mt-6 w-full bg-ink-900 px-4 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-50">
-          {submitting ? "Confirming..." : "Confirm unpaid order"}
+          {submitting ? (summary.checkout_mode === "stripe" ? "Opening secure payment..." : "Confirming...") : (summary.checkout_mode === "stripe" ? "Continue to secure payment" : "Confirm unpaid order")}
         </button>
       </aside>
     </form>

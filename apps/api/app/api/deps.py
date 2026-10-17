@@ -6,9 +6,11 @@ from fastapi import Depends, Header, status
 from sqlalchemy.orm import Session
 
 from app.api.errors import APIError
+from app.core.config import CheckoutMode, settings
 from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.models import User
+from app.payments import CheckoutSessionProvider, FakeCheckoutSessionProvider, StripeCheckoutSessionProvider
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -63,3 +65,23 @@ def get_current_supreme_admin_user(current_user: CurrentUser) -> User:
 
 
 CurrentSupremeAdminUser = Annotated[User, Depends(get_current_supreme_admin_user)]
+
+
+_fake_checkout_provider = FakeCheckoutSessionProvider()
+
+
+def get_checkout_provider() -> CheckoutSessionProvider | None:
+    if settings.stripe_secret_key is None:
+        if settings.checkout_mode == CheckoutMode.STRIPE:
+            raise APIError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "stripe_configuration_error",
+                "Stripe checkout is not completely configured.",
+            )
+        return None
+    if settings.stripe_use_fake_provider:
+        return _fake_checkout_provider
+    return StripeCheckoutSessionProvider(settings.stripe_secret_key.get_secret_value())
+
+
+CheckoutProvider = Annotated[CheckoutSessionProvider | None, Depends(get_checkout_provider)]

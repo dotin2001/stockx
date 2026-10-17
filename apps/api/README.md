@@ -30,16 +30,26 @@ REFRESH_COOKIE_SECURE=false
 REFRESH_COOKIE_SAMESITE=lax
 CORS_ORIGINS=http://localhost:3000
 CHECKOUT_MODE=disabled
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+FRONTEND_BASE_URL=http://localhost:3000
+STRIPE_EXPECTED_LIVEMODE=false
+STRIPE_RESERVATION_MINUTES=30
+STRIPE_USE_FAKE_PROVIDER=false
 ```
 
 `DATABASE_URL` is consumed by the FastAPI app, Alembic, and seed command. The
 `POSTGRES_*` variables in `.env.example` are for Docker Compose's PostgreSQL
 container and are intentionally ignored by the API settings loader.
 
-`CHECKOUT_MODE` accepts only `disabled` and `manual` and defaults to
-`disabled`. Use `CHECKOUT_MODE=manual` only for local development when you
-explicitly want confirmation to create an unpaid order and consume inventory.
-No payment provider is contacted by manual checkout.
+`CHECKOUT_MODE` accepts `disabled`, `manual`, or `stripe` and defaults to
+`disabled`. Use `manual` only for local development when you explicitly want
+confirmation to create an unpaid order and consume inventory; no provider is
+contacted in that mode. Stripe mode requires the secret key, endpoint signing
+secret, frontend origin, test/live expectation, and the fixed 30-minute
+reservation duration. Test (`sk_test_...`) and live (`sk_live_...`) keys must
+never be mixed. The fake provider switch is restricted to a local test-mode
+origin and exists only for deterministic smoke testing.
 
 ## Migrations
 
@@ -115,15 +125,78 @@ GET    /api/v1/messages
 POST   /api/v1/messages
 GET    /api/v1/messages/{id}
 GET    /api/v1/checkout/summary
+POST   /api/v1/checkout/sessions
 POST   /api/v1/orders
 GET    /api/v1/orders
 GET    /api/v1/orders/{id}
+GET    /api/v1/orders/{id}/payment-session
+POST   /api/v1/orders/{id}/cancel-payment
+POST   /api/v1/payments/stripe/webhook
 ```
 
 `POST /api/v1/orders` requires an `Idempotency-Key` header. The request body
 contains the server-issued checkout token plus recipient/contact/address data;
 product lines and totals are always recalculated from the current account cart.
 Orders created in manual mode are `confirmed` and `unpaid`.
+
+`POST /checkout/sessions` uses the same body and header, but creates a pending
+30-minute inventory reservation and returns an owner-visible Stripe-hosted URL.
+The success URL only means the browser returned; verified webhook state is the
+sole authority for paid confirmation. The cancel URL likewise only returns to
+order detail. Customers must use `cancel-payment` to expire an open provider
+session and release inventory explicitly.
+
+## Stripe Checkout Operations
+
+Create separate Stripe webhook destinations and secrets for CLI development,
+sandbox/staging, and production. Register an HTTPS production endpoint at:
+
+```text
+POST https://your-api.example.com/api/v1/payments/stripe/webhook
+```
+
+Subscribe only to these Checkout event types:
+
+```text
+checkout.session.completed
+checkout.session.async_payment_succeeded
+checkout.session.async_payment_failed
+checkout.session.expired
+```
+
+In Stripe Dashboard payment-method settings, initially enable only instant test
+methods such as cards and compatible wallets. Shipping rates, automatic tax,
+discounts, saved methods, subscriptions, Connect, refunds, disputes,
+fulfillment, and notification email are intentionally deferred.
+
+For local Stripe sandbox forwarding, start the API with a test key and use the
+endpoint secret printed by this Stripe CLI process (it is distinct from a
+Dashboard destination secret):
+
+```bash
+stripe login
+stripe listen \
+  --events checkout.session.completed,checkout.session.async_payment_succeeded,checkout.session.async_payment_failed,checkout.session.expired \
+  --forward-to http://127.0.0.1:8000/api/v1/payments/stripe/webhook
+```
+
+Set `STRIPE_WEBHOOK_SECRET=whsec_...` to the printed value, then restart the
+API. Never expose either Stripe secret to `NEXT_PUBLIC_*` variables or browser
+logs.
+
+Schedule reconciliation at least every five minutes so interrupted session
+creation and locally overdue reservations are recovered:
+
+```bash
+stockx-api-reconcile-payments --stale-minutes 5 --limit 100
+```
+
+To retry one safely stored anomalous event from Stripe's current Checkout
+Session state, use the event ID. This is an operator command, not a public API:
+
+```bash
+stockx-api-reconcile-payments --event-id evt_123
+```
 
 Guests can browse public catalog data and add active sellable items to a guest
 cart. Watchlist and message-admin actions require an authenticated customer.
@@ -231,9 +304,10 @@ Optional destructive local rollback:
 alembic downgrade base
 ```
 
-The checkout migration adds `orders` and `order_items`. Disable checkout and
-back up any order data that must be retained before downgrading past that
-revision because the downgrade drops those tables.
+The payment migration adds reservation timestamps, `payment_attempts`, and
+`stripe_webhook_events`. Before downgrading it, disable new Stripe sessions but
+keep webhooks and reconciliation running until every payable session is paid or
+terminal. Back up reconciliation data before removing the tables.
 
 The default `pytest` suite uses in-process test clients and does not require a
 running API server.
@@ -308,9 +382,30 @@ Common smoke-test failures:
   `CHECKOUT_MODE=manual`. The smoke flow intentionally fails when order
   placement remains disabled.
 
-Stripe Checkout Sessions, charges, payment attempts, webhooks, refunds, and
-fulfillment remain deferred. The order foundation is provider-independent and
-the manual local flow never represents an order as paid.
+For a deterministic running-service payment smoke, start the API and the smoke
+command with the same database and these local-only settings:
+
+```bash
+CHECKOUT_MODE=stripe \
+STRIPE_SECRET_KEY=sk_test_harness \
+STRIPE_WEBHOOK_SECRET=whsec_harness \
+FRONTEND_BASE_URL=http://localhost:3000 \
+STRIPE_EXPECTED_LIVEMODE=false \
+STRIPE_USE_FAKE_PROVIDER=true \
+uvicorn app.main:app
+
+CHECKOUT_MODE=stripe \
+STRIPE_SECRET_KEY=sk_test_harness \
+STRIPE_WEBHOOK_SECRET=whsec_harness \
+FRONTEND_BASE_URL=http://localhost:3000 \
+STRIPE_EXPECTED_LIVEMODE=false \
+STRIPE_USE_FAKE_PROVIDER=true \
+python -m app.smoke --stripe --base-url http://127.0.0.1:8000
+```
+
+Do not use the fake provider in a shared, sandbox, staging, or production
+deployment. Real hosted-checkout verification requires Stripe sandbox
+credentials and the CLI or an HTTPS webhook destination.
 
 Quick manual API smoke:
 

@@ -7,6 +7,7 @@ import { api, ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
 import type { OrderPage } from "@/lib/types";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/states";
+import { OrderPaymentStatus } from "@/components/orders/order-payment-status";
 
 const PAGE_SIZE = 10;
 
@@ -31,13 +32,13 @@ export function OrderHistoryClient() {
   useEffect(() => { void load(); }, [load]);
   if (loading) return <LoadingState label="Loading orders..." />;
   if (error || !data) return <ErrorState title="Could not load orders" message={error ?? undefined} href="/orders" action="Try again" />;
-  if (data.total === 0) return <EmptyState title="No orders yet" message="Confirmed development orders will appear here." href="/cart" action="View cart" />;
+  if (data.total === 0) return <EmptyState title="No orders yet" message="Your confirmed and pending orders will appear here." href="/cart" action="View cart" />;
   return (
     <section className="mx-auto grid max-w-4xl gap-5">
       <div><p className="text-sm font-bold uppercase tracking-wide text-market-green">Account</p><h1 className="mt-2 text-3xl font-black">Order history</h1></div>
       {data.items.map((order) => <Link key={order.id} href={`/orders/${order.id}`} className="surface grid gap-3 p-5 hover:border-market-green sm:grid-cols-[1fr_auto]">
         <div><p className="font-black">{order.order_number}</p><p className="mt-1 text-sm text-ink-500">{new Date(order.created_at).toLocaleString()} · {order.items.length} line{order.items.length === 1 ? "" : "s"}</p><p className="mt-2 text-sm">{order.items[0]?.product_name}</p></div>
-        <div className="sm:text-right"><p className="font-black">{formatMoney(order.total_cents, order.currency)}</p><p className="mt-1 text-xs font-bold uppercase text-market-green">{order.status} · {order.payment_status}</p></div>
+        <div className="sm:text-right"><p className="font-black">{formatMoney(order.total_cents, order.currency)}</p><div className="mt-2"><OrderPaymentStatus order={order} compact /></div></div>
       </Link>)}
       <div className="flex justify-between gap-4">
         <button type="button" onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))} disabled={offset === 0} className="border border-ink-900 px-4 py-2 text-sm font-bold disabled:opacity-40">Previous</button>

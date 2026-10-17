@@ -31,6 +31,10 @@ Initial tables:
   confirmed/payment state, integer-cent totals, and a unique public number.
 - `order_items`: immutable catalog/variant/quantity/price snapshots with
   nullable source references; source deletion does not erase order history.
+- `payment_attempts`: provider-separated Checkout Session lifecycle, integer
+  money/currency, environment, expiration, completion, and safe failure data.
+- `stripe_webhook_events`: unique provider event IDs, payload digests, safe
+  processing outcomes, and no raw webhook or card data.
 
 The foundation deliberately stores admin access as boolean flags instead of a text access-level column. New users default to customer access with both flags false. Normal admins use `is_admin`; supreme admins are operator-granted users with both `is_admin` and `is_supreme_admin` true.
 
@@ -53,6 +57,12 @@ The initial migration creates the foundation tables, foreign keys, unique constr
 The checkout-order migration is intentionally reversible for local development,
 but its downgrade drops retained order history. Disable checkout and back up any
 orders that must be retained before downgrading below revision `202610080001`.
+
+Revision `202610090001` adds the payment tables plus nullable reservation and
+inventory-release timestamps to orders. Before downgrading it, disable new
+Stripe sessions and drain or expire open attempts while webhook and
+reconciliation processing remains online. Existing manual orders retain null
+reservation fields through upgrade and downgrade.
 
 ## Seed Data
 

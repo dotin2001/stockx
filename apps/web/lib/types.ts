@@ -386,9 +386,10 @@ export type CartMergeResponse = {
   skipped: GuestCartSkippedItem[];
 };
 
-export type CheckoutMode = "disabled" | "manual";
+export type CheckoutMode = "disabled" | "manual" | "stripe";
 export type OrderStatus = "pending_payment" | "confirmed" | "cancelled";
 export type PaymentStatus = "unpaid" | "paid" | "failed" | "refunded";
+export type PaymentAttemptStatus = "initializing" | "open" | "processing" | "paid" | "failed" | "expired" | "cancelled";
 
 export type ShippingAddress = {
   recipient_name: string;
@@ -433,6 +434,34 @@ export type OrderCreatePayload = {
   shipping: ShippingAddress;
 };
 
+export type PaymentAttempt = {
+  id: UUID;
+  provider: "stripe";
+  status: PaymentAttemptStatus;
+  amount_cents: number;
+  currency: string;
+  expires_at: string;
+  completed_at: string | null;
+  failure_code: string | null;
+};
+
+export type PaymentSession = {
+  order_id: UUID;
+  payment_attempt_id: UUID;
+  provider_session_id: string;
+  status: PaymentAttemptStatus;
+  url: string | null;
+  expires_at: string;
+};
+
+export type PaymentCancellation = {
+  order_id: UUID;
+  order_status: OrderStatus;
+  payment_status: PaymentStatus;
+  attempt_status: PaymentAttemptStatus;
+  inventory_released_at: string | null;
+};
+
 export type OrderItem = {
   id: UUID;
   listing_id: UUID | null;
@@ -464,6 +493,9 @@ export type Order = {
   customer_email: string;
   shipping: ShippingAddress;
   items: OrderItem[];
+  reservation_expires_at: string | null;
+  inventory_released_at: string | null;
+  payment_attempts: PaymentAttempt[];
   confirmed_at: string | null;
   created_at: string;
   updated_at: string;

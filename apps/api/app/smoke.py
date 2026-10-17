@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
+import json
 import os
 import sys
 from dataclasses import dataclass
+from datetime import UTC
 from time import time_ns
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
+from sqlalchemy import select
 
 from app.admin import promote_admin, promote_supreme_admin
+from app.core.config import CheckoutMode, settings
+from app.db.session import SessionLocal
+from app.models import Listing, Order, PaymentAttempt, StripeWebhookEvent
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -572,6 +580,185 @@ def smoke_checkout_orders(client: httpx.Client, access_token: str, listing_id: s
     assert_status(hidden, 404, "Cross-user GET /api/v1/orders/{id}")
 
 
+def _stripe_smoke_shipping() -> dict[str, str | None]:
+    return {
+        "recipient_name": "Stripe Smoke User",
+        "contact_email": "stripe-smoke@example.test",
+        "contact_phone": "+1 555 555 0102",
+        "address_line1": "456 Webhook Way",
+        "address_line2": None,
+        "city": "San Francisco",
+        "state": "CA",
+        "postal_code": "94105",
+        "country": "US",
+    }
+
+
+def _listing_quantity(listing_id: str) -> int:
+    with SessionLocal() as db:
+        listing = db.get(Listing, UUID(listing_id))
+        if listing is None:
+            fail(f"Smoke listing {listing_id!r} is missing from the configured database.")
+        return listing.available_quantity
+
+
+def _signed_checkout_event(*, event_id: str, event_type: str, attempt_id: str, paid: bool) -> tuple[bytes, str]:
+    if settings.stripe_webhook_secret is None:
+        fail("STRIPE_WEBHOOK_SECRET is required for the Stripe smoke workflow.")
+    with SessionLocal() as db:
+        attempt = db.get(PaymentAttempt, UUID(attempt_id))
+        if attempt is None:
+            fail(f"Payment attempt {attempt_id!r} was not found in the configured database.")
+        order = db.get(Order, attempt.order_id)
+        if order is None or not attempt.provider_session_id:
+            fail("Stripe smoke payment state is incomplete before webhook delivery.")
+        expires_at = attempt.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        event = {
+            "id": event_id,
+            "object": "event",
+            "type": event_type,
+            "livemode": attempt.provider_livemode,
+            "data": {
+                "object": {
+                    "id": attempt.provider_session_id,
+                    "object": "checkout.session",
+                    "payment_intent": f"pi_smoke_{uuid4().hex}" if paid else None,
+                    "url": None,
+                    "status": "complete" if paid else "expired",
+                    "payment_status": "paid" if paid else "unpaid",
+                    "amount_total": attempt.amount_cents,
+                    "currency": attempt.currency.lower(),
+                    "livemode": attempt.provider_livemode,
+                    "expires_at": int(expires_at.timestamp()),
+                    "metadata": {
+                        "order_id": str(order.id),
+                        "payment_attempt_id": str(attempt.id),
+                        "correlation_id": attempt.correlation_id,
+                    },
+                }
+            },
+        }
+    payload = json.dumps(event, separators=(",", ":")).encode()
+    timestamp = int(__import__("time").time())
+    digest = hmac.new(
+        settings.stripe_webhook_secret.get_secret_value().encode(),
+        f"{timestamp}.".encode() + payload,
+        hashlib.sha256,
+    ).hexdigest()
+    return payload, f"t={timestamp},v1={digest}"
+
+
+def _start_stripe_session(client: httpx.Client, access_token: str, *, context: str) -> dict:
+    headers = {"Authorization": f"Bearer {access_token}"}
+    summary_response = request(client, "GET", "/api/v1/checkout/summary", headers=headers)
+    assert_status(summary_response, 200, f"{context} checkout summary")
+    summary = response_json(summary_response, f"{context} checkout summary")
+    if not isinstance(summary, dict) or summary.get("checkout_mode") != "stripe":
+        fail("Stripe smoke requires a running API with CHECKOUT_MODE=stripe.")
+    response = request(
+        client,
+        "POST",
+        "/api/v1/checkout/sessions",
+        headers={**headers, "Idempotency-Key": f"stripe-smoke-{uuid4()}"},
+        json={"checkout_token": summary.get("checkout_token"), "shipping": _stripe_smoke_shipping()},
+    )
+    assert_status(response, 201, f"{context} POST /api/v1/checkout/sessions")
+    body = response_json(response, f"{context} Stripe session")
+    if not isinstance(body, dict) or not all(isinstance(body.get(key), str) for key in ("order_id", "payment_attempt_id", "provider_session_id", "url")):
+        fail("Stripe session response is missing its safe redirect identifiers.")
+    return body
+
+
+def smoke_stripe_checkout(client: httpx.Client, access_token: str, listing_id: str) -> None:
+    if settings.checkout_mode != CheckoutMode.STRIPE or not settings.stripe_use_fake_provider:
+        fail(
+            "Deterministic Stripe smoke requires CHECKOUT_MODE=stripe and "
+            "STRIPE_USE_FAKE_PROVIDER=true in both the API and smoke command environments."
+        )
+    headers = {"Authorization": f"Bearer {access_token}"}
+    before_quantity = _listing_quantity(listing_id)
+    started = _start_stripe_session(client, access_token, context="paid")
+    assert_equal(_listing_quantity(listing_id), before_quantity - 2, "Stripe reservation inventory mismatch.")
+
+    cart_after = request(client, "GET", "/api/v1/cart", headers=headers)
+    assert_status(cart_after, 200, "GET cart after Stripe reservation")
+    assert_equal(response_json(cart_after, "cart after Stripe reservation").get("items"), [], "Stripe checkout should clear purchased cart rows.")
+    resumed = request(client, "GET", f"/api/v1/orders/{started['order_id']}/payment-session", headers=headers)
+    assert_status(resumed, 200, "GET resumable Stripe session")
+    assert_equal(response_json(resumed, "resumable Stripe session").get("provider_session_id"), started["provider_session_id"], "Resumed Stripe session mismatch.")
+
+    other_token, _refresh = smoke_auth(client, unique_user())
+    hidden = request(
+        client,
+        "GET",
+        f"/api/v1/orders/{started['order_id']}/payment-session",
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert_status(hidden, 404, "Cross-user Stripe payment-session lookup")
+
+    event_id = f"evt_smoke_paid_{uuid4().hex}"
+    payload, signature = _signed_checkout_event(
+        event_id=event_id,
+        event_type="checkout.session.completed",
+        attempt_id=started["payment_attempt_id"],
+        paid=True,
+    )
+    invalid = request(
+        client,
+        "POST",
+        "/api/v1/payments/stripe/webhook",
+        content=payload,
+        headers={"Content-Type": "application/json", "Stripe-Signature": "t=1,v1=invalid"},
+    )
+    assert_status(invalid, 400, "invalid Stripe signature")
+    with SessionLocal() as db:
+        if db.scalar(select(StripeWebhookEvent).where(StripeWebhookEvent.stripe_event_id == event_id)) is not None:
+            fail("Invalid Stripe signature unexpectedly persisted an event.")
+
+    for label in ("signed paid webhook", "duplicate signed paid webhook"):
+        delivered = request(
+            client,
+            "POST",
+            "/api/v1/payments/stripe/webhook",
+            content=payload,
+            headers={"Content-Type": "application/json", "Stripe-Signature": signature},
+        )
+        assert_status(delivered, 200, label)
+    paid_order = request(client, "GET", f"/api/v1/orders/{started['order_id']}", headers=headers)
+    assert_status(paid_order, 200, "GET paid Stripe order")
+    paid_body = response_json(paid_order, "paid Stripe order")
+    assert_equal(paid_body.get("status"), "confirmed", "Paid Stripe order status mismatch.")
+    assert_equal(paid_body.get("payment_status"), "paid", "Paid Stripe order payment mismatch.")
+    assert_equal(_listing_quantity(listing_id), before_quantity - 2, "Paid webhook must not decrement or restore inventory.")
+
+    added = request(client, "POST", "/api/v1/cart/items", json={"listing_id": listing_id, "quantity": 1}, headers=headers)
+    assert_status(added, 201, "add cart item for Stripe expiry")
+    expiring = _start_stripe_session(client, access_token, context="expired")
+    assert_equal(_listing_quantity(listing_id), before_quantity - 3, "Expiring reservation inventory mismatch.")
+    expired_payload, expired_signature = _signed_checkout_event(
+        event_id=f"evt_smoke_expired_{uuid4().hex}",
+        event_type="checkout.session.expired",
+        attempt_id=expiring["payment_attempt_id"],
+        paid=False,
+    )
+    expired = request(
+        client,
+        "POST",
+        "/api/v1/payments/stripe/webhook",
+        content=expired_payload,
+        headers={"Content-Type": "application/json", "Stripe-Signature": expired_signature},
+    )
+    assert_status(expired, 200, "signed expired Stripe webhook")
+    expired_order = request(client, "GET", f"/api/v1/orders/{expiring['order_id']}", headers=headers)
+    assert_status(expired_order, 200, "GET expired Stripe order")
+    expired_body = response_json(expired_order, "expired Stripe order")
+    assert_equal(expired_body.get("status"), "cancelled", "Expired Stripe order status mismatch.")
+    assert_equal(expired_body.get("payment_attempts", [{}])[-1].get("status"), "expired", "Expired payment attempt mismatch.")
+    assert_equal(_listing_quantity(listing_id), before_quantity - 2, "Expired Stripe reservation should restore inventory once.")
+
+
 def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str:
     admin = unique_admin_user()
     admin_token, _refresh_token = smoke_auth(client, admin)
@@ -757,7 +944,7 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str
     return active_listing_id
 
 
-def run_smoke(base_url: str, timeout: float) -> None:
+def run_smoke(base_url: str, timeout: float, *, stripe: bool = False) -> None:
     with httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout) as client:
         product_id = smoke_public_api(client)
         user = unique_user()
@@ -765,7 +952,10 @@ def run_smoke(base_url: str, timeout: float) -> None:
         listing_id = smoke_admin_product_management(client, product_id)
         smoke_protected_marketplace(client, access_token, product_id)
         smoke_cart(client, access_token, listing_id)
-        smoke_checkout_orders(client, access_token, listing_id)
+        if stripe:
+            smoke_stripe_checkout(client, access_token, listing_id)
+        else:
+            smoke_checkout_orders(client, access_token, listing_id)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -776,13 +966,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=f"API base URL. Defaults to ${BASE_URL_ENV} or {DEFAULT_BASE_URL}.",
     )
     parser.add_argument("--timeout", type=float, default=10.0, help="HTTP request timeout in seconds.")
+    parser.add_argument(
+        "--stripe",
+        action="store_true",
+        help="Run deterministic Stripe payment smoke checks (requires the local fake-provider harness).",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        run_smoke(args.base_url, args.timeout)
+        run_smoke(args.base_url, args.timeout, stripe=args.stripe)
     except SmokeFailure as exc:
         print(f"FAIL api smoke: {exc}", file=sys.stderr)
         return 1

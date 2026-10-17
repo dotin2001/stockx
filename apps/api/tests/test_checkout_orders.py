@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import CheckoutMode, Settings, settings
 from app.core.security import hash_password
-from app.models import CartItem, Category, Listing, Order, OrderItem, Product, ProductVariant, User
+from app.models import CartItem, Category, Listing, Order, OrderItem, PaymentAttempt, Product, ProductVariant, User
 from app.schemas.order import OrderCreateRequest, ShippingAddress
 from app.services import checkout, orders
 from app.services.order_identifiers import generate_order_number, normalized_request_hash
@@ -89,8 +90,89 @@ def test_checkout_mode_defaults_disabled_and_rejects_unknown(monkeypatch) -> Non
     monkeypatch.delenv("CHECKOUT_MODE", raising=False)
     assert Settings(_env_file=None).checkout_mode == CheckoutMode.DISABLED
     assert Settings(checkout_mode="manual", _env_file=None).checkout_mode == CheckoutMode.MANUAL
+    stripe_settings = Settings(
+        checkout_mode="stripe",
+        stripe_secret_key="sk_test_example",
+        stripe_webhook_secret="whsec_example",
+        frontend_base_url="http://localhost:3000/",
+        _env_file=None,
+    )
+    assert stripe_settings.checkout_mode == CheckoutMode.STRIPE
+    assert stripe_settings.frontend_base_url == "http://localhost:3000"
+    assert "sk_test_example" not in stripe_settings.model_dump_json()
+    assert "whsec_example" not in stripe_settings.model_dump_json()
+    fake_settings = Settings(
+        checkout_mode="stripe",
+        stripe_secret_key="sk_test_harness",
+        stripe_webhook_secret="whsec_harness",
+        frontend_base_url="http://localhost:3000",
+        stripe_use_fake_provider=True,
+        _env_file=None,
+    )
+    assert fake_settings.stripe_use_fake_provider is True
     with pytest.raises(ValidationError):
         Settings(checkout_mode="automatic", _env_file=None)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"stripe_secret_key": "sk_test_example"},
+        {"stripe_secret_key": "sk_test_example", "stripe_webhook_secret": "whsec_example"},
+        {
+            "stripe_secret_key": "sk_live_example",
+            "stripe_webhook_secret": "whsec_example",
+            "frontend_base_url": "https://shop.example.com",
+        },
+    ],
+)
+def test_stripe_mode_rejects_incomplete_or_environment_mismatched_configuration(overrides: dict) -> None:
+    with pytest.raises(ValidationError):
+        Settings(checkout_mode="stripe", _env_file=None, **overrides)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"stripe_use_fake_provider": True},
+        {
+            "checkout_mode": "stripe",
+            "stripe_secret_key": "sk_test_harness",
+            "stripe_webhook_secret": "whsec_harness",
+            "frontend_base_url": "https://shop.example.com",
+            "stripe_use_fake_provider": True,
+        },
+        {
+            "checkout_mode": "stripe",
+            "stripe_secret_key": "sk_live_harness",
+            "stripe_webhook_secret": "whsec_harness",
+            "frontend_base_url": "https://shop.example.com",
+            "stripe_expected_livemode": True,
+            "stripe_use_fake_provider": True,
+        },
+    ],
+)
+def test_fake_stripe_provider_is_limited_to_local_test_mode(overrides: dict) -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, **overrides)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"frontend_base_url": "not-a-url"},
+        {"frontend_base_url": "http://shop.example.com"},
+        {"frontend_base_url": "https://user:pass@shop.example.com"},
+        {"frontend_base_url": "https://shop.example.com/checkout"},
+        {"frontend_base_url": "https://shop.example.com?secret=value"},
+        {"stripe_reservation_minutes": 15},
+        {"stripe_expected_livemode": True, "frontend_base_url": "http://localhost:3000"},
+    ],
+)
+def test_checkout_settings_reject_unsafe_urls_or_reservation_duration(overrides: dict) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **overrides)
 
 
 def test_order_tables_constraints_and_source_foreign_keys() -> None:
@@ -366,3 +448,61 @@ def test_order_history_paginates_newest_first(client: TestClient, db_session: Se
     assert first_page["total"] == 2
     assert first_page["items"][0]["id"] == second["id"]
     assert second_page["items"][0]["id"] == first["id"]
+
+
+def test_order_serialization_exposes_safe_payment_lifecycle_summaries(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    headers = register(client, "payment-summary@example.com")
+    create_cart_listing(db_session, buyer_email="payment-summary@example.com", quantity=1)
+    settings.checkout_mode = CheckoutMode.MANUAL
+    summary = client.get("/api/v1/checkout/summary", headers=headers).json()
+    created = client.post(
+        "/api/v1/orders",
+        headers={**headers, "Idempotency-Key": "payment-summary"},
+        json=order_payload(summary["checkout_token"]),
+    ).json()
+    order = db_session.get(Order, UUID(created["id"]))
+    assert order is not None
+    now = datetime.now(timezone.utc)
+    order.reservation_expires_at = now + timedelta(minutes=30)
+    for index, attempt_status in enumerate(
+        ("initializing", "open", "processing", "paid", "failed", "expired", "cancelled")
+    ):
+        order.payment_attempts.append(
+            PaymentAttempt(
+                provider="stripe",
+                status=attempt_status,
+                amount_cents=order.total_cents,
+                currency=order.currency,
+                provider_session_id=f"cs_test_safe_{index}",
+                provider_payment_intent_id=f"pi_safe_{index}",
+                provider_livemode=False,
+                hosted_url=f"https://checkout.stripe.com/c/pay/secret-{index}",
+                provider_idempotency_key=f"provider-key-{index}",
+                correlation_id=f"correlation-{index}",
+                expires_at=now + timedelta(minutes=30),
+                completed_at=now if attempt_status == "paid" else None,
+                failure_code="provider_declined" if attempt_status == "failed" else None,
+            )
+        )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/orders/{order.id}", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert {attempt["status"] for attempt in body["payment_attempts"]} == {
+        "initializing",
+        "open",
+        "processing",
+        "paid",
+        "failed",
+        "expired",
+        "cancelled",
+    }
+    serialized = response.text
+    assert "checkout.stripe.com" not in serialized
+    assert "provider-key" not in serialized
+    assert "cs_test_safe" not in serialized
+    assert "pi_safe" not in serialized

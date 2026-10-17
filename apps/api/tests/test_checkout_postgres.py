@@ -5,14 +5,16 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import APIError
 from app.core.config import CheckoutMode, settings
-from app.models import CartItem, Category, Listing, Order, OrderItem, Product, User
-from app.schemas.order import OrderCreateRequest
-from app.services import checkout, orders
+from app.models import CartItem, Category, Listing, Order, OrderItem, PaymentAttempt, Product, StripeWebhookEvent, User
+from app.payments import FakeCheckoutSessionProvider
+from app.schemas.order import OrderCreateRequest, PaymentSessionCreateRequest
+from app.services import checkout, orders, payment_checkout
+from app.services import stripe_webhooks
 
 
 POSTGRES_URL = os.getenv("TEST_POSTGRES_DATABASE_URL")
@@ -139,3 +141,253 @@ def test_concurrent_same_customer_retry_creates_one_order(postgres_checkout_data
         assert len(db.scalars(select(Order).where(Order.user_id == user_id)).all()) == 1
         listing = db.get(Listing, ids["listing"])
         assert listing is not None and listing.available_quantity == 0
+
+
+def test_two_customers_competing_for_final_stripe_reservation(postgres_checkout_data) -> None:
+    SessionLocal, ids, tokens = postgres_checkout_data
+    previous_mode = settings.checkout_mode
+    settings.checkout_mode = CheckoutMode.STRIPE
+
+    def attempt(user_id):
+        with SessionLocal() as db:
+            user = db.get(User, user_id)
+            assert user is not None
+            try:
+                result = payment_checkout.reserve_stripe_checkout(
+                    db,
+                    user=user,
+                    payload=PaymentSessionCreateRequest.model_validate(shipping_payload(tokens[user_id]).model_dump()),
+                    idempotency_key=f"stripe-final-unit-{user_id}",
+                )
+                db.commit()
+                return ("success", user_id, result.order.id)
+            except APIError as exc:
+                db.rollback()
+                return (exc.code, user_id, None)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(attempt, ids["buyers"]))
+    finally:
+        settings.checkout_mode = previous_mode
+
+    assert sum(result[0] == "success" for result in results) == 1
+    assert sum(result[0] in {"listing_unavailable", "quantity_exceeds_availability"} for result in results) == 1
+    with SessionLocal() as db:
+        listing = db.get(Listing, ids["listing"])
+        assert listing is not None and listing.available_quantity == 0
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(PaymentAttempt)
+                .join(Order)
+                .where(Order.user_id.in_(ids["buyers"]))
+            )
+            == 1
+        )
+
+
+def test_concurrent_same_customer_stripe_retry_creates_one_provider_session(postgres_checkout_data) -> None:
+    SessionLocal, ids, tokens = postgres_checkout_data
+    user_id = ids["buyers"][0]
+    payload = PaymentSessionCreateRequest.model_validate(shipping_payload(tokens[user_id]).model_dump())
+    provider = FakeCheckoutSessionProvider()
+    previous_mode = settings.checkout_mode
+    previous_base_url = settings.frontend_base_url
+    settings.checkout_mode = CheckoutMode.STRIPE
+    settings.frontend_base_url = "https://shop.example.com"
+
+    def attempt(_index: int):
+        with SessionLocal() as db:
+            user = db.get(User, user_id)
+            assert user is not None
+            return payment_checkout.start_checkout_session(
+                db,
+                user=user,
+                payload=payload,
+                idempotency_key="same-stripe-concurrent-attempt",
+                provider=provider,
+            )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(attempt, range(2)))
+    finally:
+        settings.checkout_mode = previous_mode
+        settings.frontend_base_url = previous_base_url
+
+    assert results[0].order_id == results[1].order_id
+    assert results[0].provider_session_id == results[1].provider_session_id
+    assert len(provider.requests) == 1
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(Order).where(Order.user_id == user_id)) == 1
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(PaymentAttempt)
+                .join(Order)
+                .where(Order.user_id == user_id)
+            )
+            == 1
+        )
+
+
+def test_paid_provider_state_wins_concurrent_customer_cancellation(postgres_checkout_data) -> None:
+    SessionLocal, ids, tokens = postgres_checkout_data
+    user_id = ids["buyers"][0]
+    payload = PaymentSessionCreateRequest.model_validate(shipping_payload(tokens[user_id]).model_dump())
+    provider = FakeCheckoutSessionProvider()
+    previous_mode = settings.checkout_mode
+    previous_base_url = settings.frontend_base_url
+    settings.checkout_mode = CheckoutMode.STRIPE
+    settings.frontend_base_url = "https://shop.example.com"
+    try:
+        with SessionLocal() as db:
+            user = db.get(User, user_id)
+            assert user is not None
+            started = payment_checkout.start_checkout_session(
+                db,
+                user=user,
+                payload=payload,
+                idempotency_key="paid-cancel-race",
+                provider=provider,
+            )
+        paid_session = provider.set_session_state(
+            started.provider_session_id,
+            status="complete",
+            payment_status="paid",
+            payment_intent_id="pi_paid_cancel_concurrency",
+        )
+
+        def cancel():
+            with SessionLocal() as db:
+                user = db.get(User, user_id)
+                assert user is not None
+                return payment_checkout.cancel_pending_payment(
+                    db,
+                    user=user,
+                    order_id=started.order_id,
+                    provider=provider,
+                )
+
+        def confirm_paid():
+            with SessionLocal() as db:
+                result = payment_checkout.mark_payment_paid(
+                    db,
+                    attempt_id=started.payment_attempt_id,
+                    provider_session=paid_session,
+                )
+                db.commit()
+                return result
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda fn: fn(), (cancel, confirm_paid)))
+    finally:
+        settings.checkout_mode = previous_mode
+        settings.frontend_base_url = previous_base_url
+
+    assert all(result.payment_status == "paid" for result in results)
+    with SessionLocal() as db:
+        order = db.get(Order, started.order_id)
+        listing = db.get(Listing, ids["listing"])
+        assert order is not None and order.status == "confirmed" and order.payment_status == "paid"
+        assert order.inventory_released_at is None
+        assert listing is not None and listing.available_quantity == 0
+
+
+def test_concurrent_paid_and_expired_transitions_keep_inventory_consistent(postgres_checkout_data) -> None:
+    SessionLocal, ids, tokens = postgres_checkout_data
+    user_id = ids["buyers"][0]
+    payload = PaymentSessionCreateRequest.model_validate(shipping_payload(tokens[user_id]).model_dump())
+    provider = FakeCheckoutSessionProvider()
+    previous_mode = settings.checkout_mode
+    previous_base_url = settings.frontend_base_url
+    settings.checkout_mode = CheckoutMode.STRIPE
+    settings.frontend_base_url = "https://shop.example.com"
+    try:
+        with SessionLocal() as db:
+            user = db.get(User, user_id)
+            assert user is not None
+            started = payment_checkout.start_checkout_session(
+                db,
+                user=user,
+                payload=payload,
+                idempotency_key="paid-expired-race",
+                provider=provider,
+            )
+        paid_session = provider.set_session_state(
+            started.provider_session_id,
+            status="complete",
+            payment_status="paid",
+            payment_intent_id="pi_paid_expired_concurrency",
+        )
+
+        def confirm_paid():
+            with SessionLocal() as db:
+                result = payment_checkout.mark_payment_paid(
+                    db,
+                    attempt_id=started.payment_attempt_id,
+                    provider_session=paid_session,
+                )
+                db.commit()
+                return result.payment_status
+
+        def expire_unpaid():
+            with SessionLocal() as db:
+                result = payment_checkout.release_terminal_reservation(
+                    db,
+                    attempt_id=started.payment_attempt_id,
+                    attempt_status="expired",
+                    failure_code="session_expired",
+                )
+                db.commit()
+                return result.payment_status
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda fn: fn(), (confirm_paid, expire_unpaid)))
+    finally:
+        settings.checkout_mode = previous_mode
+        settings.frontend_base_url = previous_base_url
+
+    assert len(set(results)) == 1
+    with SessionLocal() as db:
+        order = db.get(Order, started.order_id)
+        attempt = db.get(PaymentAttempt, started.payment_attempt_id)
+        listing = db.get(Listing, ids["listing"])
+        assert order is not None and attempt is not None and listing is not None
+        if order.payment_status == "paid":
+            assert order.status == "confirmed" and attempt.status == "paid"
+            assert order.inventory_released_at is None and listing.available_quantity == 0
+        else:
+            assert order.status == "cancelled" and order.payment_status == "failed"
+            assert attempt.status == "expired"
+            assert order.inventory_released_at is not None and listing.available_quantity == 1
+
+
+def test_concurrent_duplicate_webhook_insert_is_deduplicated(postgres_checkout_data) -> None:
+    SessionLocal, _ids, _tokens = postgres_checkout_data
+    event = {
+        "id": f"evt_concurrent_{uuid4().hex}",
+        "type": "checkout.session.completed",
+        "livemode": False,
+        "data": {"object": {"id": f"cs_test_{uuid4().hex}"}},
+    }
+    payload = str(event).encode()
+
+    def deliver(_index: int):
+        with SessionLocal() as db:
+            return stripe_webhooks.handle_verified_event(db, event=event, payload=payload)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(deliver, range(2)))
+
+    assert results == [{"received": True}, {"received": True}]
+    with SessionLocal() as db:
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(StripeWebhookEvent)
+                .where(StripeWebhookEvent.stripe_event_id == event["id"])
+            )
+            == 1
+        )

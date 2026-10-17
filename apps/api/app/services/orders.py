@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -10,14 +11,28 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.errors import APIError
 from app.core.config import CheckoutMode, settings
-from app.models import Listing, Order, OrderItem, User
-from app.schemas.order import OrderCreateRequest, OrderItemRead, OrderPage, OrderRead, ShippingAddress
+from app.models import CartItem, Listing, Order, OrderItem, User
+from app.schemas.order import (
+    CheckoutSummary,
+    OrderCreateRequest,
+    OrderItemRead,
+    OrderPage,
+    OrderRead,
+    PaymentAttemptSummary,
+    ShippingAddress,
+)
 from app.services import checkout
 from app.services.customer_lock import lock_customer_row
 from app.services.order_identifiers import generate_order_number, normalized_request_hash
 
 
-ORDER_LOAD_OPTIONS = (selectinload(Order.items),)
+ORDER_LOAD_OPTIONS = (selectinload(Order.items), selectinload(Order.payment_attempts))
+
+
+@dataclass(slots=True)
+class LockedCheckout:
+    cart_items: list[CartItem]
+    summary: CheckoutSummary
 
 
 def _serialize_order(order: Order) -> OrderRead:
@@ -45,6 +60,9 @@ def _serialize_order(order: Order) -> OrderRead:
             country=order.country,
         ),
         items=[OrderItemRead.model_validate(item) for item in order.items],
+        reservation_expires_at=order.reservation_expires_at,
+        inventory_released_at=order.inventory_released_at,
+        payment_attempts=[PaymentAttemptSummary.model_validate(attempt) for attempt in order.payment_attempts],
         confirmed_at=order.confirmed_at,
         created_at=order.created_at,
         updated_at=order.updated_at,
@@ -61,6 +79,110 @@ def _existing_for_key(db: Session, *, user_id: UUID, idempotency_key: str) -> Or
         .where(Order.user_id == user_id, Order.idempotency_key == idempotency_key)
         .options(*ORDER_LOAD_OPTIONS)
     )
+
+
+def lock_and_validate_checkout(
+    db: Session,
+    *,
+    user: User,
+    payload: OrderCreateRequest,
+) -> LockedCheckout:
+    cart_items = checkout.get_locked_cart_items(db, user=user)
+    listing_ids = sorted({item.listing_id for item in cart_items}, key=str)
+    locked_listings = list(
+        db.scalars(
+            select(Listing)
+            .where(Listing.id.in_(listing_ids))
+            .order_by(Listing.id)
+            .with_for_update()
+            .options(selectinload(Listing.product), selectinload(Listing.product_variant))
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    listing_by_id = {listing.id: listing for listing in locked_listings}
+    for item in cart_items:
+        listing = listing_by_id.get(item.listing_id)
+        if listing is None:
+            raise APIError(status.HTTP_409_CONFLICT, "listing_unavailable", "A listing in your cart is no longer available.")
+        item.listing = listing
+
+    summary = checkout.summary_from_items(user=user, items=cart_items)
+    if not hmac.compare_digest(summary.checkout_token, payload.checkout_token):
+        raise APIError(
+            status.HTTP_409_CONFLICT,
+            "checkout_changed",
+            "Your cart or inventory changed. Review the refreshed checkout summary.",
+        )
+    return LockedCheckout(cart_items=cart_items, summary=summary)
+
+
+def build_order_from_checkout(
+    *,
+    user: User,
+    payload: OrderCreateRequest,
+    idempotency_key: str,
+    request_hash: str,
+    checkout_context: LockedCheckout,
+    order_status: str,
+    payment_status: str,
+    confirmed_at: datetime | None,
+    reservation_expires_at: datetime | None = None,
+) -> Order:
+    shipping = payload.shipping
+    summary = checkout_context.summary
+    order = Order(
+        order_number=generate_order_number(),
+        user_id=user.id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        status=order_status,
+        payment_status=payment_status,
+        currency=summary.currency,
+        subtotal_cents=summary.subtotal_cents,
+        shipping_cents=summary.shipping_cents,
+        tax_cents=summary.tax_cents,
+        total_cents=summary.total_cents,
+        customer_name=user.name,
+        customer_email=user.email,
+        recipient_name=shipping.recipient_name,
+        contact_email=shipping.contact_email,
+        contact_phone=shipping.contact_phone,
+        address_line1=shipping.address_line1,
+        address_line2=shipping.address_line2,
+        city=shipping.city,
+        state=shipping.state,
+        postal_code=shipping.postal_code,
+        country=shipping.country,
+        confirmed_at=confirmed_at,
+        reservation_expires_at=reservation_expires_at,
+    )
+    for item in checkout_context.cart_items:
+        listing = item.listing
+        variant = listing.product_variant
+        order.items.append(
+            OrderItem(
+                listing_id=listing.id,
+                product_id=listing.product_id,
+                product_variant_id=listing.product_variant_id,
+                product_name=listing.product.name,
+                product_slug=listing.product.slug,
+                product_image_url=listing.product.image_url,
+                variant_label=checkout.variant_label(listing),
+                variant_sku=variant.sku if variant else None,
+                variant_size=variant.size if variant else None,
+                variant_color=variant.color if variant else None,
+                quantity=item.quantity,
+                unit_price_cents=listing.price_cents,
+                line_total_cents=listing.price_cents * item.quantity,
+            )
+        )
+    return order
+
+
+def reserve_inventory_and_clear_cart(db: Session, *, checkout_context: LockedCheckout) -> None:
+    for item in checkout_context.cart_items:
+        item.listing.available_quantity -= item.quantity
+        db.delete(item)
 
 
 def get_idempotent_replay(
@@ -106,82 +228,18 @@ def create_order(
             )
         return _serialize_order(existing)
 
-    cart_items = checkout.get_locked_cart_items(db, user=user)
-    listing_ids = sorted({item.listing_id for item in cart_items}, key=str)
-    locked_listings = list(
-        db.scalars(
-            select(Listing)
-            .where(Listing.id.in_(listing_ids))
-            .order_by(Listing.id)
-            .with_for_update()
-            .options(selectinload(Listing.product), selectinload(Listing.product_variant))
-            .execution_options(populate_existing=True)
-        ).all()
-    )
-    listing_by_id = {listing.id: listing for listing in locked_listings}
-    for item in cart_items:
-        listing = listing_by_id.get(item.listing_id)
-        if listing is None:
-            raise APIError(status.HTTP_409_CONFLICT, "listing_unavailable", "A listing in your cart is no longer available.")
-        item.listing = listing
-
-    summary = checkout.summary_from_items(user=user, items=cart_items)
-    if not hmac.compare_digest(summary.checkout_token, payload.checkout_token):
-        raise APIError(
-            status.HTTP_409_CONFLICT,
-            "checkout_changed",
-            "Your cart or inventory changed. Review the refreshed checkout summary.",
-        )
-
-    shipping = payload.shipping
-    now = datetime.now(timezone.utc)
-    order = Order(
-        order_number=generate_order_number(),
-        user_id=user.id,
+    checkout_context = lock_and_validate_checkout(db, user=user, payload=payload)
+    order = build_order_from_checkout(
+        user=user,
+        payload=payload,
         idempotency_key=idempotency_key,
         request_hash=request_hash,
-        status="confirmed",
+        checkout_context=checkout_context,
+        order_status="confirmed",
         payment_status="unpaid",
-        currency=summary.currency,
-        subtotal_cents=summary.subtotal_cents,
-        shipping_cents=summary.shipping_cents,
-        tax_cents=summary.tax_cents,
-        total_cents=summary.total_cents,
-        customer_name=user.name,
-        customer_email=user.email,
-        recipient_name=shipping.recipient_name,
-        contact_email=shipping.contact_email,
-        contact_phone=shipping.contact_phone,
-        address_line1=shipping.address_line1,
-        address_line2=shipping.address_line2,
-        city=shipping.city,
-        state=shipping.state,
-        postal_code=shipping.postal_code,
-        country=shipping.country,
-        confirmed_at=now,
+        confirmed_at=datetime.now(timezone.utc),
     )
-    for item in cart_items:
-        listing = item.listing
-        variant = listing.product_variant
-        order.items.append(
-            OrderItem(
-                listing_id=listing.id,
-                product_id=listing.product_id,
-                product_variant_id=listing.product_variant_id,
-                product_name=listing.product.name,
-                product_slug=listing.product.slug,
-                product_image_url=listing.product.image_url,
-                variant_label=checkout.variant_label(listing),
-                variant_sku=variant.sku if variant else None,
-                variant_size=variant.size if variant else None,
-                variant_color=variant.color if variant else None,
-                quantity=item.quantity,
-                unit_price_cents=listing.price_cents,
-                line_total_cents=listing.price_cents * item.quantity,
-            )
-        )
-        listing.available_quantity -= item.quantity
-        db.delete(item)
+    reserve_inventory_and_clear_cart(db, checkout_context=checkout_context)
     db.add(order)
     db.flush()
     return _serialize_order(order)

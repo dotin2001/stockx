@@ -10,6 +10,7 @@ Requires-Dist: PyJWT>=2.8
 Requires-Dist: psycopg[binary]>=3.2
 Requires-Dist: pydantic-settings>=2.4
 Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: stripe==16.0.0
 Requires-Dist: uvicorn[standard]>=0.30
 Provides-Extra: dev
 Requires-Dist: httpx>=0.27; extra == "dev"

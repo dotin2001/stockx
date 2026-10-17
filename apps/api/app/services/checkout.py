@@ -114,7 +114,7 @@ def summary_from_items(*, user: User, items: list[CartItem]) -> CheckoutSummary:
         tax_cents=0,
         total_cents=subtotal,
         checkout_mode=settings.checkout_mode,
-        order_placement_enabled=settings.checkout_mode == CheckoutMode.MANUAL,
+        order_placement_enabled=settings.checkout_mode in {CheckoutMode.MANUAL, CheckoutMode.STRIPE},
         checkout_token=checkout_token_for_items(user_id=user.id, items=items, secret=settings.secret_key),
     )
 
