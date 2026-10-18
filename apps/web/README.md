@@ -63,6 +63,8 @@ pagination still come from the backend API.
 /orders/[id]
 /sell
 /admin/messages
+/admin/orders
+/admin/orders/[id]
 /admin/products
 /admin/products/new
 ```
@@ -92,6 +94,16 @@ but cannot mutate quantity or listing status. `/admin/messages` is visible to
 admins for customer messages. `/sell` is intentionally informational: normal
 users are customers with cart, watchlist, and message-admin account actions,
 while store admins manage catalog and sellable inventory.
+
+`/admin/orders` is available to normal and supreme admins from both desktop and
+mobile navigation. Search, order-status filters, payment-status filters, and
+pagination are stored in the URL so opening an order and returning restores the
+same list. `/admin/orders/[id]` renders the immutable customer, shipping, item,
+money, lifecycle, and safe payment-attempt snapshots returned by the backend.
+Both screens are intentionally read-only: customer checkout continuation,
+payment cancellation, refunds, fulfillment, shipment, and order-status changes
+remain outside the admin order-review UI. Guests and customers are rejected by
+the backend even if they navigate directly to these routes.
 
 Seeded route examples:
 

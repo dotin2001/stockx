@@ -22,12 +22,39 @@ from app.schemas.product import (
     ProductVariantRead,
     ProductVariantUpdate,
 )
+from app.schemas.order import AdminOrderPage, OrderRead, OrderStatus, PaymentStatus
+from app.services import admin_orders
 from app.services import admin_products
 from app.services import admin_users
 from app.services import customer_messages
 from app.services import listings as listing_service
 
 router = APIRouter()
+
+
+@router.get("/orders", response_model=AdminOrderPage)
+def list_orders(
+    db: DbSession,
+    _admin: CurrentAdminUser,
+    search: str | None = Query(default=None, max_length=320),
+    status_filter: OrderStatus | None = Query(default=None, alias="status"),
+    payment_status: PaymentStatus | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> AdminOrderPage:
+    return admin_orders.list_orders(
+        db,
+        search=search,
+        order_status=status_filter,
+        payment_status=payment_status,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/orders/{order_id}", response_model=OrderRead)
+def get_order(order_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> OrderRead:
+    return admin_orders.get_order(db, order_id=order_id)
 
 
 @router.get("/users", response_model=AdminUserPage)

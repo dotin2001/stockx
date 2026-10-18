@@ -508,6 +508,37 @@ export type OrderPage = {
   offset: number;
 };
 
+export type AdminOrderSummary = {
+  id: UUID;
+  order_number: string;
+  customer_name: string;
+  customer_email: string;
+  status: OrderStatus;
+  payment_status: PaymentStatus;
+  currency: string;
+  total_cents: number;
+  item_line_count: number;
+  item_quantity: number;
+  latest_payment_attempt: PaymentAttempt | null;
+  confirmed_at: string | null;
+  created_at: string;
+};
+
+export type AdminOrderPage = {
+  items: AdminOrderSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AdminOrderQuery = {
+  search?: string;
+  status?: OrderStatus;
+  payment_status?: PaymentStatus;
+  limit?: number;
+  offset?: number;
+};
+
 export type CustomerMessageCreatePayload = {
   subject: string;
   body: string;

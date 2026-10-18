@@ -61,10 +61,13 @@ export function SiteHeader() {
           ))}
           {status === "authenticated" && user ? (
             <>
-              {user.is_admin ? (
+              {user.is_admin || user.is_supreme_admin ? (
                 <>
                   <Link href="/admin/products" className="transition hover:text-market-green">
                     Admin Products
+                  </Link>
+                  <Link href="/admin/orders" className="transition hover:text-market-green">
+                    Orders
                   </Link>
                   <Link href="/admin/messages" className="transition hover:text-market-green">
                     Messages
@@ -111,10 +114,13 @@ export function SiteHeader() {
             ))}
             {status === "authenticated" ? (
               <>
-                {user?.is_admin ? (
+                {user?.is_admin || user?.is_supreme_admin ? (
                   <>
                     <Link href="/admin/products" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
                       Admin Products
+                    </Link>
+                    <Link href="/admin/orders" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
+                      Orders
                     </Link>
                     <Link href="/admin/messages" className="px-2 py-3 transition hover:bg-ink-50 hover:text-market-green">
                       Messages

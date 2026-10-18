@@ -1,5 +1,7 @@
 import type {
   ApiErrorEnvelope,
+  AdminOrderPage,
+  AdminOrderQuery,
   AdminListingCreatePayload,
   AdminListingInventoryUpdatePayload,
   AdminProductCreatePayload,
@@ -155,6 +157,16 @@ function productDiscoverySearchParams(limit: number, offset: number, params: Pro
   return searchParams;
 }
 
+function adminOrderSearchParams(query: AdminOrderQuery) {
+  const params = new URLSearchParams();
+  if (query.search !== undefined) params.set("search", query.search);
+  if (query.status !== undefined) params.set("status", query.status);
+  if (query.payment_status !== undefined) params.set("payment_status", query.payment_status);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.offset !== undefined) params.set("offset", String(query.offset));
+  return params;
+}
+
 export const api = {
   listCategories: () => apiRequest<Category[]>("/api/v1/categories"),
   listProducts: (limit = 20, offset = 0, params: ProductDiscoveryQueryParams = {}) =>
@@ -285,6 +297,16 @@ export const api = {
     }),
   getOrder: (accessToken: string, orderId: UUID) =>
     apiRequest<Order>(`/api/v1/orders/${orderId}`, {
+      accessToken
+    }),
+  listAdminOrders: (accessToken: string, query: AdminOrderQuery = {}) => {
+    const params = adminOrderSearchParams(query).toString();
+    return apiRequest<AdminOrderPage>(`/api/v1/admin/orders${params ? `?${params}` : ""}`, {
+      accessToken
+    });
+  },
+  getAdminOrder: (accessToken: string, orderId: UUID) =>
+    apiRequest<Order>(`/api/v1/admin/orders/${encodeURIComponent(orderId)}`, {
       accessToken
     }),
   getPaymentSession: (accessToken: string, orderId: UUID) =>

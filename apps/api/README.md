@@ -214,6 +214,8 @@ PATCH  /api/v1/admin/listings/{id}/inventory/status
 GET    /api/v1/admin/messages
 GET    /api/v1/admin/messages/{id}
 POST   /api/v1/admin/messages/{id}/read
+GET    /api/v1/admin/orders
+GET    /api/v1/admin/orders/{id}
 GET    /api/v1/admin/products
 POST   /api/v1/admin/products
 PATCH  /api/v1/admin/products/{id}
@@ -241,6 +243,20 @@ cart flows only accept active listings with quantity greater than zero and
 reject cart quantities above availability. Quantity adjustments and inventory
 status changes under `/api/v1/admin/listings/{id}/inventory/*` require a
 supreme admin.
+
+Both normal and supreme admins can review orders through the read-only admin
+order endpoints. `GET /api/v1/admin/orders` accepts optional `search`, `status`,
+`payment_status`, `limit` (1–100), and `offset` parameters. Search matches an
+order number or immutable customer-email snapshot case-insensitively. Supported
+order statuses are `pending_payment`, `confirmed`, and `cancelled`; supported
+payment statuses are `unpaid`, `paid`, `failed`, and `refunded`.
+
+List responses contain compact customer, total, item-count, lifecycle, and
+latest-payment-attempt summaries. Detail responses contain immutable shipping,
+item, money, and safe payment-attempt snapshots. Provider URLs and identifiers,
+webhook payloads, credentials, request hashes, and idempotency values are never
+returned. These endpoints do not refund, fulfill, ship, cancel, resume, or
+otherwise mutate orders.
 
 Protected routes require an access token:
 
@@ -319,7 +335,8 @@ PostgreSQL-backed seed data, refresh cookies, auth flows, admin-created store
 listings, guest/authenticated cart behavior, authenticated watchlist/customer
 messages, admin bootstrap, admin
 listing management, admin archive/restore behavior, manual checkout, inventory
-decrement, cart clearing, order history/detail, and cross-user nondisclosure
+decrement, cart clearing, order history/detail, normal-admin order
+search/filter/detail review, and cross-user nondisclosure
 through real HTTP requests.
 
 From the repository root, start PostgreSQL:
@@ -365,10 +382,13 @@ The smoke test expects seeded categories `sneakers`, `streetwear`, and
 `api-smoke-...@example.test` users on every run, so repeated runs do not fail
 because of previous user data. Listings, messages, cart rows, and revoked
 refresh-token rows created by smoke runs may remain in the local database. The
-admin smoke promotes a temporary smoke user, temporarily archives the seeded
-product, verifies archived-product listing rejection, and restores the product
-before finishing. To reset local smoke data, use the optional rollback above and
-then re-run migrations and seed data.
+admin smoke promotes temporary smoke users, temporarily archives the seeded
+product, verifies archived-product listing rejection, restores the product,
+and reviews the uniquely created order through the read-only admin API. The
+order-review checks verify guest/customer rejection, normal-admin access,
+email and order-number search, combined status filters, safe detail fields,
+unchanged order state, and cross-customer nondisclosure. To reset local smoke
+data, use the optional rollback above and then re-run migrations and seed data.
 
 Common smoke-test failures:
 

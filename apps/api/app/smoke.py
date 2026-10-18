@@ -499,7 +499,7 @@ def smoke_cart(client: httpx.Client, access_token: str, listing_id: str) -> None
     assert_equal(merged_cart.get("total_quantity"), 2, "Merged guest cart quantity mismatch.")
 
 
-def smoke_checkout_orders(client: httpx.Client, access_token: str, listing_id: str) -> None:
+def smoke_checkout_orders(client: httpx.Client, access_token: str, listing_id: str) -> str:
     headers = {"Authorization": f"Bearer {access_token}"}
     summary_response = request(client, "GET", "/api/v1/checkout/summary", headers=headers)
     assert_status(summary_response, 200, "GET /api/v1/checkout/summary")
@@ -578,6 +578,7 @@ def smoke_checkout_orders(client: httpx.Client, access_token: str, listing_id: s
         headers={"Authorization": f"Bearer {other_token}"},
     )
     assert_status(hidden, 404, "Cross-user GET /api/v1/orders/{id}")
+    return order_id
 
 
 def _stripe_smoke_shipping() -> dict[str, str | None]:
@@ -671,7 +672,7 @@ def _start_stripe_session(client: httpx.Client, access_token: str, *, context: s
     return body
 
 
-def smoke_stripe_checkout(client: httpx.Client, access_token: str, listing_id: str) -> None:
+def smoke_stripe_checkout(client: httpx.Client, access_token: str, listing_id: str) -> str:
     if settings.checkout_mode != CheckoutMode.STRIPE or not settings.stripe_use_fake_provider:
         fail(
             "Deterministic Stripe smoke requires CHECKOUT_MODE=stripe and "
@@ -757,6 +758,104 @@ def smoke_stripe_checkout(client: httpx.Client, access_token: str, listing_id: s
     assert_equal(expired_body.get("status"), "cancelled", "Expired Stripe order status mismatch.")
     assert_equal(expired_body.get("payment_attempts", [{}])[-1].get("status"), "expired", "Expired payment attempt mismatch.")
     assert_equal(_listing_quantity(listing_id), before_quantity - 2, "Expired Stripe reservation should restore inventory once.")
+    return started["order_id"]
+
+
+def smoke_admin_order_review(client: httpx.Client, customer_access_token: str, customer_email: str, order_id: str) -> None:
+    customer_headers = {"Authorization": f"Bearer {customer_access_token}"}
+    customer_detail_response = request(client, "GET", f"/api/v1/orders/{order_id}", headers=customer_headers)
+    assert_status(customer_detail_response, 200, "Customer order before admin review")
+    customer_detail = response_json(customer_detail_response, "customer order before admin review")
+    if not isinstance(customer_detail, dict):
+        fail("Customer order detail should be an object before admin review.")
+    order_number = customer_detail.get("order_number")
+    order_status = customer_detail.get("status")
+    payment_status = customer_detail.get("payment_status")
+    if not all(isinstance(value, str) for value in (order_number, order_status, payment_status)):
+        fail("Customer order detail is missing admin review filter fields.")
+
+    guest = request(client, "GET", "/api/v1/admin/orders")
+    assert_status(guest, 401, "Guest GET /api/v1/admin/orders")
+    customer_denied = request(client, "GET", "/api/v1/admin/orders", headers=customer_headers)
+    assert_status(customer_denied, 403, "Customer GET /api/v1/admin/orders")
+    require_error_code(response_json(customer_denied, "customer admin order list"), "admin_required", "Customer admin order list")
+
+    admin = unique_admin_user()
+    admin_token, _refresh_token = smoke_auth(client, admin)
+    promote_admin_user(admin.email)
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    admin_me = request(client, "GET", "/api/v1/auth/me", headers=admin_headers)
+    assert_status(admin_me, 200, "Normal admin identity for order review")
+    admin_me_body = response_json(admin_me, "normal admin identity")
+    if not isinstance(admin_me_body, dict):
+        fail("Normal admin identity should be an object.")
+    assert_equal(admin_me_body.get("is_admin"), True, "Order reviewer should be a normal admin.")
+    assert_equal(admin_me_body.get("is_supreme_admin"), False, "Order review should not require supreme admin.")
+
+    filtered_response = request(
+        client,
+        "GET",
+        "/api/v1/admin/orders",
+        params={
+            "search": customer_email.upper(),
+            "status": order_status,
+            "payment_status": payment_status,
+            "limit": 1,
+            "offset": 0,
+        },
+        headers=admin_headers,
+    )
+    assert_status(filtered_response, 200, "Filtered GET /api/v1/admin/orders")
+    filtered = response_json(filtered_response, "filtered admin order list")
+    if not isinstance(filtered, dict) or not isinstance(filtered.get("items"), list):
+        fail("Admin order list should be a paginated object.")
+    assert_equal(filtered.get("total"), 1, "Unique customer email filter should match one smoke order.")
+    assert_equal(filtered.get("limit"), 1, "Admin order list limit mismatch.")
+    assert_equal(filtered.get("offset"), 0, "Admin order list offset mismatch.")
+    if not filtered["items"] or filtered["items"][0].get("id") != order_id:
+        fail("Filtered admin order list did not return the smoke order.")
+
+    number_search = request(
+        client,
+        "GET",
+        "/api/v1/admin/orders",
+        params={"search": order_number},
+        headers=admin_headers,
+    )
+    assert_status(number_search, 200, "Order-number GET /api/v1/admin/orders")
+    number_page = response_json(number_search, "order-number admin search")
+    if not isinstance(number_page, dict) or not any(
+        isinstance(item, dict) and item.get("id") == order_id for item in number_page.get("items", [])
+    ):
+        fail("Order-number admin search did not return the smoke order.")
+
+    admin_detail_response = request(client, "GET", f"/api/v1/admin/orders/{order_id}", headers=admin_headers)
+    assert_status(admin_detail_response, 200, "GET /api/v1/admin/orders/{id}")
+    admin_detail = response_json(admin_detail_response, "admin order detail")
+    if not isinstance(admin_detail, dict):
+        fail("Admin order detail should be an object.")
+    for field in ("id", "order_number", "customer_name", "customer_email", "shipping", "items", "payment_attempts"):
+        if field not in admin_detail:
+            fail(f"Admin order detail is missing safe snapshot field {field!r}.")
+    for unsafe in ("hosted_url", "provider_session_id", "provider_idempotency_key", "request_hash", "idempotency_key"):
+        if unsafe in admin_detail_response.text:
+            fail(f"Admin order detail exposed unsafe field {unsafe!r}.")
+
+    intruder_token, _refresh = smoke_auth(client, unique_user())
+    intruder_detail = request(
+        client,
+        "GET",
+        f"/api/v1/orders/{order_id}",
+        headers={"Authorization": f"Bearer {intruder_token}"},
+    )
+    assert_status(intruder_detail, 404, "Cross-customer order lookup after admin review")
+    customer_after = request(client, "GET", f"/api/v1/orders/{order_id}", headers=customer_headers)
+    assert_status(customer_after, 200, "Customer order after admin review")
+    after_body = response_json(customer_after, "customer order after admin review")
+    if not isinstance(after_body, dict):
+        fail("Customer order detail should remain an object after admin review.")
+    for field in ("status", "payment_status", "updated_at", "payment_attempts"):
+        assert_equal(after_body.get(field), customer_detail.get(field), f"Admin review mutated order field {field!r}.")
 
 
 def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str:
@@ -953,9 +1052,10 @@ def run_smoke(base_url: str, timeout: float, *, stripe: bool = False) -> None:
         smoke_protected_marketplace(client, access_token, product_id)
         smoke_cart(client, access_token, listing_id)
         if stripe:
-            smoke_stripe_checkout(client, access_token, listing_id)
+            order_id = smoke_stripe_checkout(client, access_token, listing_id)
         else:
-            smoke_checkout_orders(client, access_token, listing_id)
+            order_id = smoke_checkout_orders(client, access_token, listing_id)
+        smoke_admin_order_review(client, access_token, user.email, order_id)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

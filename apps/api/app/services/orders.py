@@ -35,7 +35,7 @@ class LockedCheckout:
     summary: CheckoutSummary
 
 
-def _serialize_order(order: Order) -> OrderRead:
+def serialize_order(order: Order) -> OrderRead:
     return OrderRead(
         id=order.id,
         order_number=order.order_number,
@@ -203,7 +203,7 @@ def get_idempotent_replay(
             "idempotency_key_reused",
             "This idempotency key was already used for different checkout data.",
         )
-    return _serialize_order(existing)
+    return serialize_order(existing)
 
 
 def create_order(
@@ -226,7 +226,7 @@ def create_order(
                 "idempotency_key_reused",
                 "This idempotency key was already used for different checkout data.",
             )
-        return _serialize_order(existing)
+        return serialize_order(existing)
 
     checkout_context = lock_and_validate_checkout(db, user=user, payload=payload)
     order = build_order_from_checkout(
@@ -242,7 +242,7 @@ def create_order(
     reserve_inventory_and_clear_cart(db, checkout_context=checkout_context)
     db.add(order)
     db.flush()
-    return _serialize_order(order)
+    return serialize_order(order)
 
 
 def list_orders(db: Session, *, user: User, limit: int, offset: int) -> OrderPage:
@@ -258,7 +258,7 @@ def list_orders(db: Session, *, user: User, limit: int, offset: int) -> OrderPag
         ).all()
     )
     return OrderPage(
-        items=[_serialize_order(order) for order in orders],
+        items=[serialize_order(order) for order in orders],
         total=total,
         limit=limit,
         offset=offset,
@@ -273,4 +273,4 @@ def get_order(db: Session, *, user: User, order_id: UUID) -> OrderRead:
     )
     if order is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "order_not_found", "Order was not found.")
-    return _serialize_order(order)
+    return serialize_order(order)

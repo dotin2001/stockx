@@ -204,3 +204,30 @@ class OrderPage(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class AdminOrderSummary(BaseModel):
+    id: UUID
+    order_number: str
+    customer_name: str
+    customer_email: str
+    status: OrderStatus
+    payment_status: PaymentStatus
+    currency: str
+    total_cents: int
+    item_line_count: int = Field(ge=0)
+    item_quantity: int = Field(ge=0)
+    latest_payment_attempt: PaymentAttemptSummary | None = None
+    confirmed_at: datetime | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AdminOrderPage(BaseModel):
+    items: list[AdminOrderSummary]
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1, le=100)
+    offset: int = Field(ge=0)
+
+    model_config = ConfigDict(extra="forbid")
