@@ -76,10 +76,14 @@ Seed data is idempotent by slug and includes representative categories and produ
 - `sneakers`
 - `streetwear`
 - `collectibles`
+- `trading-cards`
+- `handbags`
+- `watches`
 
-The catalog contains five configured products in each category. Catalog-only
-seeding remains available immediately after migrations and does not create a
-user account or login credential.
+The catalog contains ten configured products in each original category and five
+products in each of Trading Cards, Handbags, and Watches. Catalog-only seeding
+remains available immediately after migrations and does not create a user
+account or login credential.
 
 To add deterministic sellable inventory, first register a user through the API
 or web app and promote that existing user to admin. Then run:

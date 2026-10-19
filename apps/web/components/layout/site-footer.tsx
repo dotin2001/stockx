@@ -16,6 +16,9 @@ export function SiteFooter() {
             <Link href="/category/sneakers">Sneakers</Link>
             <Link href="/category/streetwear">Streetwear</Link>
             <Link href="/category/collectibles">Collectibles</Link>
+            <Link href="/category/trading-cards">Trading Cards</Link>
+            <Link href="/category/handbags">Handbags</Link>
+            <Link href="/category/watches">Watches</Link>
           </div>
         </div>
         <div>

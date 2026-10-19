@@ -10,7 +10,7 @@ import { ProductGrid } from "@/components/catalog/product-grid";
 import { LoadingState, ErrorState } from "@/components/ui/states";
 
 export default function HomePage() {
-  const products = useApiResource(() => api.listProducts(24), []);
+  const products = useApiResource(() => api.listProducts(48), []);
   const grouped = useMemo(() => {
     if (products.status !== "success") {
       return {};
@@ -40,7 +40,10 @@ export default function HomePage() {
             {[
               ["sneakers", "Most Popular Sneakers"],
               ["streetwear", "Popular Streetwear"],
-              ["collectibles", "Trending Collectibles"]
+              ["collectibles", "Trending Collectibles"],
+              ["trading-cards", "Trading Cards"],
+              ["handbags", "Designer Handbags"],
+              ["watches", "Popular Watches"]
             ].map(([slug, title]) => (
               <Reveal key={slug}>
                 <section className="grid gap-5">

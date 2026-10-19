@@ -68,7 +68,7 @@ export function SearchPageClient() {
       {query && (results.status === "loading" || results.status === "idle") ? <LoadingState label="Searching..." /> : null}
       {query && results.status === "error" ? <ErrorState title="Search failed" message={results.error.message} /> : null}
       {query && results.status === "success" ? (
-        <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="grid items-start gap-6 lg:grid-cols-[292px_minmax(0,1fr)]">
           <DiscoveryControls metadata={results.data.discovery} />
           <div className="grid gap-5">
             <p className="text-sm font-semibold text-ink-500">{results.data.total} products found</p>

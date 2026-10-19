@@ -141,16 +141,30 @@ def test_seed_data_has_stable_unique_slugs() -> None:
     category_slugs = [category.slug for category in CATEGORIES]
     product_slugs = [product.slug for product in PRODUCTS]
 
-    assert {"sneakers", "streetwear", "collectibles"}.issubset(category_slugs)
+    assert set(category_slugs) == {
+        "sneakers",
+        "streetwear",
+        "collectibles",
+        "trading-cards",
+        "handbags",
+        "watches",
+    }
     assert len(category_slugs) == len(set(category_slugs))
     assert len(product_slugs) == len(set(product_slugs))
     assert all(product.lowest_ask_cents is None or product.lowest_ask_cents >= 0 for product in PRODUCTS)
 
 
-def test_seed_data_has_five_valid_products_per_supported_category() -> None:
+def test_seed_data_has_valid_products_per_supported_category() -> None:
     counts = Counter(product.category_slug for product in PRODUCTS)
 
-    assert counts == {"sneakers": 5, "streetwear": 5, "collectibles": 5}
+    assert counts == {
+        "sneakers": 10,
+        "streetwear": 10,
+        "collectibles": 10,
+        "trading-cards": 5,
+        "handbags": 5,
+        "watches": 5,
+    }
     assert all(product.name.strip() for product in PRODUCTS)
     assert all(product.image_url and product.image_url.startswith("http") for product in PRODUCTS)
     assert all(product.lowest_ask_cents is not None and product.lowest_ask_cents > 0 for product in PRODUCTS)
@@ -159,10 +173,10 @@ def test_seed_data_has_five_valid_products_per_supported_category() -> None:
 def test_seed_purchase_option_metadata_is_unique() -> None:
     seed_skus = [product.seed_sku for product in PRODUCTS]
 
-    assert len(seed_skus) == 15
+    assert len(seed_skus) == 45
     assert len(seed_skus) == len(set(seed_skus))
     assert all(sku.startswith(SEED_SKU_PREFIX) for sku in seed_skus)
-    assert {product.seed_size for product in PRODUCTS} == {"10", "M", "One Size"}
+    assert {product.seed_size for product in PRODUCTS} == {"10", "M", "One Size", "Sealed"}
 
 
 def test_seed_cli_accepts_optional_inventory_owner() -> None:
@@ -226,8 +240,8 @@ def test_inventory_seed_is_idempotent_and_preserves_unrelated_inventory(db_sessi
         ).all()
     )
 
-    assert len(variants) == 15
-    assert len(listings) == 15
+    assert len(variants) == 45
+    assert len(listings) == 45
     assert all(listing.available_quantity == SEED_INVENTORY_QUANTITY for listing in listings)
     assert all(listing.currency == "USD" and listing.status == "active" for listing in listings)
     assert {listing.price_cents for listing in listings} == {

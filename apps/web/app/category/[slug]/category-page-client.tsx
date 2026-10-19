@@ -31,7 +31,7 @@ export function CategoryPageClient({ slug }: { slug: string }) {
       <CategoryHero meta={meta} />
       <div className="page-shell grid gap-8 py-8">
         <Breadcrumbs items={[{ label: meta.label }]} />
-        <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="grid items-start gap-6 lg:grid-cols-[292px_minmax(0,1fr)]">
           {products.status === "success" ? <DiscoveryControls metadata={products.data.discovery} /> : <div />}
           <section className="grid gap-5">
             <div>

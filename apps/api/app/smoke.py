@@ -23,7 +23,14 @@ from app.models import Listing, Order, PaymentAttempt, StripeWebhookEvent
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 BASE_URL_ENV = "STOCKX_API_BASE_URL"
 REFRESH_COOKIE_NAME = "stockx_refresh"
-SEEDED_CATEGORY_SLUGS = {"sneakers", "streetwear", "collectibles"}
+SEEDED_CATEGORY_SLUGS = {
+    "sneakers",
+    "streetwear",
+    "collectibles",
+    "trading-cards",
+    "handbags",
+    "watches",
+}
 SEEDED_PRODUCT_SLUG = "jordan-1-retro-high-element-gore-tex-black-particle-grey"
 SEEDED_SEARCH_QUERY = "jordan"
 

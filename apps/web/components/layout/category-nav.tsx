@@ -3,11 +3,10 @@ import Link from "next/link";
 const categories = [
   { label: "Sneakers", href: "/category/sneakers" },
   { label: "Streetwear", href: "/category/streetwear" },
-  { label: "Electronics", href: "/search?q=electronics" },
-  { label: "Trading Cards", href: "/search?q=trading%20cards" },
+  { label: "Trading Cards", href: "/category/trading-cards" },
   { label: "Collectibles", href: "/category/collectibles" },
-  { label: "Handbags", href: "/search?q=handbags" },
-  { label: "Watches", href: "/search?q=watches" }
+  { label: "Handbags", href: "/category/handbags" },
+  { label: "Watches", href: "/category/watches" }
 ];
 
 export function CategoryNav() {
