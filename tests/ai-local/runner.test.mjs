@@ -21,6 +21,7 @@ function context(root) {
       body: "# Pilot\n",
       hash: "b".repeat(64),
       changeName: "local-pilot",
+      source: { kind: "markdown", path: "tasks/pilot.md" },
     },
   };
 }
@@ -67,6 +68,26 @@ test("orchestration gates implementation and applies only after complete validat
   assert.equal(setup.records.at(-1).outcome, "success");
   assert.match(captured.read().stdout, /unstaged local changes/);
   assert.doesNotMatch(captured.read().stdout, /pull request created|pushed|committed/i);
+});
+
+test("Project source is passed through preflight and identified in output", async () => {
+  const setup = await harness({
+    preflight: async ({ project }) => {
+      assert.equal(project.owner, "acme");
+      const value = context(setup.root);
+      value.task = {
+        ...value.task,
+        relativePath: null,
+        source: { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1" },
+      };
+      return value;
+    },
+  });
+  const captured = memoryIo();
+  const result = await runLocalWorkflow({ cwd: setup.root, project: { owner: "acme", number: 7 }, io: captured.io, dependencies: setup.dependencies });
+  assert.equal(result.outcome, "success");
+  assert.match(captured.read().stdout, /acme\/shop#12/);
+  assert.equal(setup.records.at(-1).source.kind, "github-issue");
 });
 
 test("dry run reports stages without worktree, Codex, or patch application", async () => {
@@ -154,4 +175,6 @@ test("Codex stage uses trusted prompt/schema and parses fake executable output",
   assert.match(invocation.options.stdin, /local-pilot/);
   assert.match(invocation.options.stdin, /\.ai-local\/context\/task\.md/);
   assert.equal(invocation.options.env.GITHUB_TOKEN, undefined);
+  assert.equal(invocation.options.env.GH_TOKEN, undefined);
+  assert.match(invocation.options.env.GH_CONFIG_DIR, /\.ai-local\/no-github-auth$/);
 });

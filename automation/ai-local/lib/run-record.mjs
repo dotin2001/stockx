@@ -1,17 +1,31 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { sanitizeText } from "./errors.mjs";
+import { assertLocal, sanitizeText } from "./errors.mjs";
 
 export function createRunId(now = new Date(), taskHash = "run") {
   return `${now.toISOString().replace(/[-:.]/g, "").replace("Z", "Z")}-${taskHash.slice(0, 10)}`;
 }
 
+function recordSource(source) {
+  if (source?.kind === "markdown") return { kind: "markdown", path: source.path };
+  assertLocal(source?.kind === "github-issue", "RUN_SOURCE", "Task source is unsupported");
+  return {
+    kind: "github-issue",
+    projectOwner: source.projectOwner,
+    projectNumber: source.projectNumber,
+    repository: source.repository,
+    issueNumber: source.issueNumber,
+    url: source.url,
+    itemId: source.itemId,
+  };
+}
+
 export function initialRunRecord({ runId, task, baseSha, branch, tools, now = new Date() }) {
   return {
-    version: 1,
+    version: 2,
     runId,
-    taskPath: task.relativePath,
+    source: recordSource(task.source),
     taskHash: task.hash,
     changeName: task.changeName,
     baseSha,

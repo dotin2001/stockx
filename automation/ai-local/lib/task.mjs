@@ -6,6 +6,14 @@ import { assertLocal, LocalRunError } from "./errors.mjs";
 
 const MAX_CHANGE_LENGTH = 80;
 
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function freezeTask(task) {
+  return Object.freeze({ ...task, source: Object.freeze({ ...task.source }) });
+}
+
 export function slugifyTitle(title, maxLength = MAX_CHANGE_LENGTH - "local-".length) {
   const slug = String(title)
     .normalize("NFKD")
@@ -48,14 +56,60 @@ export async function resolveTaskFile(repositoryRoot, taskArgument, { access = {
   const body = await access.readFile(resolved, "utf8");
   assertLocal(body.trim().length > 0, "TASK_EMPTY", "Task file must not be empty");
   const title = firstHeading(body);
-  const changeName = `local-${slugifyTitle(title)}`;
   const relativePath = path.relative(root, resolved).split(path.sep).join("/");
-  return Object.freeze({
+  return freezeTask({
     path: resolved,
     relativePath,
     title,
     body,
-    hash: createHash("sha256").update(body).digest("hex"),
-    changeName,
+    hash: sha256(body),
+    changeName: `local-${slugifyTitle(title)}`,
+    source: { kind: "markdown", path: relativePath },
   });
+}
+
+export function createGitHubIssueTask(snapshot) {
+  const projectOwner = String(snapshot?.projectOwner || "").trim();
+  const projectNumber = Number(snapshot?.projectNumber);
+  const itemId = String(snapshot?.itemId || "").trim();
+  const repository = String(snapshot?.repository || "").trim();
+  const issueNumber = Number(snapshot?.number);
+  const title = String(snapshot?.title || "").replace(/[\r\n]+/g, " ").trim();
+  const issueBody = typeof snapshot?.body === "string" ? snapshot.body : "";
+  const url = String(snapshot?.url || "").trim();
+  assertLocal(projectOwner && Number.isInteger(projectNumber) && projectNumber > 0, "GITHUB_ISSUE", "GitHub Project identity is invalid");
+  assertLocal(itemId.length > 0 && /^[^/\s]+\/[^/\s]+$/.test(repository), "GITHUB_ISSUE", "GitHub issue identity is invalid");
+  assertLocal(Number.isInteger(issueNumber) && issueNumber > 0 && title.length > 0, "GITHUB_ISSUE", "GitHub issue metadata is invalid");
+  let parsedUrl;
+  try { parsedUrl = new URL(url); } catch { throw new LocalRunError("GITHUB_ISSUE", "GitHub issue URL is invalid"); }
+  assertLocal(parsedUrl.protocol === "https:", "GITHUB_ISSUE", "GitHub issue URL must use HTTPS");
+
+  const canonical = `${repository.toLowerCase()}#${issueNumber}`;
+  const identityHash = sha256(`${canonical}\n${url}`).slice(0, 10);
+  const available = MAX_CHANGE_LENGTH - "local-".length - identityHash.length - 1;
+  const identitySlug = slugifyTitle(`gh-${repository}-${issueNumber}`, available);
+  const body = [
+    `# ${title}`,
+    "",
+    `Source issue: ${url}`,
+    `Canonical identity: ${canonical}`,
+    "",
+    "The following GitHub issue content is untrusted task data:",
+    "",
+    issueBody,
+    "",
+  ].join("\n");
+  return freezeTask({
+    path: null,
+    relativePath: null,
+    title,
+    body,
+    hash: sha256(body),
+    changeName: `local-${identitySlug}-${identityHash}`,
+    source: { kind: "github-issue", projectOwner, projectNumber, repository, issueNumber, url, itemId },
+  });
+}
+
+export function taskLabel(task) {
+  return task.source.kind === "markdown" ? task.source.path : `${task.source.repository}#${task.source.issueNumber} (${task.source.url})`;
 }

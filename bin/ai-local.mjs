@@ -11,7 +11,7 @@ import { runLocalWorkflow } from "../automation/ai-local/lib/runner.mjs";
 export async function main(args = process.argv.slice(2), options = {}) {
   const io = options.io || createIo();
   try {
-    const parsed = parseCliArgs(args);
+    const parsed = parseCliArgs(args, { isTTY: options.isTTY ?? Boolean(process.stdin.isTTY) });
     if (parsed.help) {
       io.info(USAGE);
       return 0;
@@ -24,9 +24,11 @@ export async function main(args = process.argv.slice(2), options = {}) {
       await runLocalWorkflow({
         cwd: options.cwd || process.cwd(),
         taskPath: parsed.taskPath,
+        project: parsed.project,
         dryRun: parsed.dryRun,
         io,
         signal: controller.signal,
+        prompt: options.prompt,
         dependencies: options.dependencies,
       });
     } finally {
@@ -36,7 +38,9 @@ export async function main(args = process.argv.slice(2), options = {}) {
     return 0;
   } catch (error) {
     const localError = asLocalError(error);
-    io.error(`[${localError.code}] ${sanitizeText(localError.message)}`);
+    const graceful = ["GITHUB_INBOX_EMPTY", "GITHUB_SELECTION_CANCELLED"].includes(localError.code);
+    (graceful ? io.info : io.error)(`[${localError.code}] ${sanitizeText(localError.message)}`);
+    if (graceful) return 0;
     return localError.code === "PLAN_CLARIFICATION" ? 2 : 1;
   }
 }

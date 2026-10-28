@@ -6,9 +6,10 @@ export function createIo(stdout = process.stdout, stderr = process.stderr) {
   };
 }
 
-export function formatSuccess({ changeName, paths, verification, recordPath }) {
+export function formatSuccess({ changeName, sourceLabel, paths, verification, recordPath }) {
   return [
     `Local OpenSpec run complete: ${changeName}`,
+    `Source: ${sourceLabel}`,
     `Changed paths (${paths.length}):`,
     ...paths.map((filePath) => `  - ${filePath}`),
     `Verification: ${verification.length ? verification.join(", ") : "strict OpenSpec validation"}`,

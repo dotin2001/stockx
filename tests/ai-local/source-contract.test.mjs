@@ -2,20 +2,28 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("local runner has no GitHub publication or unsafe Codex authority", async () => {
-  const [entry, runner, codex, processSource] = await Promise.all([
+test("local runner permits narrow GitHub reads but no mutation, publication, or unsafe Codex authority", async () => {
+  const [entry, runner, codex, processSource, githubSource] = await Promise.all([
     readFile("bin/ai-local.mjs", "utf8"),
     readFile("automation/ai-local/lib/runner.mjs", "utf8"),
     readFile("automation/ai-local/lib/codex.mjs", "utf8"),
     readFile("automation/ai-local/lib/process.mjs", "utf8"),
+    readFile("automation/ai-local/lib/github-project.mjs", "utf8"),
   ]);
-  const executable = `${entry}\n${runner}\n${codex}`;
+  const executable = `${entry}\n${runner}\n${codex}\n${githubSource}`;
+  assert.match(githubSource, /"project", "view"/);
+  assert.match(githubSource, /"api", "graphql"/);
   assert.doesNotMatch(executable, /gh\s+pr|githubRest|graphqlRequest|AI_PROJECT_TOKEN|GITHUB_TOKEN|git", \["(?:commit|push)/);
+  assert.doesNotMatch(githubSource, /"project",\s*"(?:item-(?:edit|delete|create)|close|copy|edit|delete)"/);
+  assert.doesNotMatch(githubSource, /"issue",\s*"(?:edit|comment|close|reopen|delete|create)"/);
+  assert.doesNotMatch(githubSource, /"pr",\s*"(?:create|merge|review|close|edit)"/);
+  assert.doesNotMatch(githubSource, /"workflow",\s*"run"|\.github\/workflows/);
   assert.doesNotMatch(codex, /danger-full-access|approve-for-me|bypass-approvals/);
   assert.match(codex, /workspace-write/);
   assert.match(codex, /--ephemeral/);
   assert.match(processSource, /CODEX_API_KEY/);
   assert.doesNotMatch(processSource.match(/const PASSTHROUGH_ENV = \[[\s\S]*?\];/)?.[0] || "", /GITHUB_TOKEN|AI_PROJECT_TOKEN|OPENAI_API_KEY/);
+  assert.doesNotMatch(githubSource.match(/const GITHUB_ENV_KEYS = \[[\s\S]*?\];/)?.[0] || "", /GITHUB_TOKEN|GH_TOKEN|AI_PROJECT_TOKEN|CODEX_API_KEY|CODEX_ACCESS_TOKEN/);
 });
 
 test("trusted prompts preserve plan/apply separation and forbid publication", async () => {

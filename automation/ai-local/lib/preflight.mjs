@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { assertLocal, LocalRunError } from "./errors.mjs";
+import { loadGitHubProjectTask } from "./github-project.mjs";
 import { runProcess } from "./process.mjs";
 import { resolveTaskFile } from "./task.mjs";
 import { findOwnedStaleWorktrees } from "./worktree.mjs";
@@ -65,29 +66,57 @@ export async function inspectTools(root, commandRunner = runProcess, env = proce
   };
 }
 
-async function inspectTemporaryStorage() {
+export async function inspectTemporaryStorage() {
   await access(os.tmpdir(), constants.R_OK | constants.W_OK);
   const probe = await mkdtemp(path.join(os.tmpdir(), "ai-local-probe-"));
   await rm(probe, { recursive: true });
 }
 
-export async function preflight({ cwd = process.cwd(), taskPath, commandRunner = runProcess, env = process.env }) {
+export async function assertNoChangeCollision(root, task) {
+  const collision = path.join(root, "openspec", "changes", task.changeName);
+  try {
+    await access(collision);
+    throw new LocalRunError("CHANGE_COLLISION", `OpenSpec change already exists: ${task.changeName}`);
+  } catch (error) {
+    if (error instanceof LocalRunError) throw error;
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
+async function inspectLocalState(root, commandRunner) {
+  const repository = await inspectRepository(root, commandRunner);
+  const stale = await findOwnedStaleWorktrees(root);
+  assertLocal(stale.length === 0, "STALE_WORKTREE", `Found ${stale.length} stale ai-local worktree(s); follow the documented cleanup procedure`);
+  await inspectTemporaryStorage();
+  return repository;
+}
+
+export async function preflight({
+  cwd = process.cwd(),
+  taskPath,
+  project = null,
+  io,
+  prompt,
+  signal,
+  commandRunner = runProcess,
+  env = process.env,
+  projectLoader = loadGitHubProjectTask,
+}) {
   try {
     const root = await discoverRepository(cwd, commandRunner);
-    const task = await resolveTaskFile(root, taskPath);
-    const collision = path.join(root, "openspec", "changes", task.changeName);
-    try {
-      await access(collision);
-      throw new LocalRunError("CHANGE_COLLISION", `OpenSpec change already exists: ${task.changeName}`);
-    } catch (error) {
-      if (error instanceof LocalRunError) throw error;
-      if (error.code !== "ENOENT") throw error;
+    let task;
+    let repository;
+    if (project) {
+      repository = await inspectLocalState(root, commandRunner);
+      io?.phase("inbox", `reading ${project.owner} Project ${project.number} (${project.statusField}=${project.statusValue})`);
+      task = await projectLoader({ root, project, io, prompt, signal, commandRunner });
+      await assertNoChangeCollision(root, task);
+    } else {
+      task = await resolveTaskFile(root, taskPath);
+      await assertNoChangeCollision(root, task);
+      repository = await inspectLocalState(root, commandRunner);
     }
-    const repository = await inspectRepository(root, commandRunner);
-    const stale = await findOwnedStaleWorktrees(root);
-    assertLocal(stale.length === 0, "STALE_WORKTREE", `Found ${stale.length} stale ai-local worktree(s); follow the documented cleanup procedure`);
     const tools = await inspectTools(root, commandRunner, env);
-    await inspectTemporaryStorage();
     return { root, task, ...repository, tools };
   } catch (error) {
     if (error instanceof LocalRunError) throw error;

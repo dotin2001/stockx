@@ -27,11 +27,15 @@ export async function runCodexStage({ root, worktree, phase, changeName, command
   const schemaPath = path.join(root, "automation", "ai-local", "schemas", `${phase}-result.schema.json`);
   const resultDirectory = path.join(worktree, ".ai-local", "results");
   const resultPath = path.join(resultDirectory, `${phase}.json`);
+  const githubConfigDirectory = path.join(worktree, ".ai-local", "no-github-auth");
   await mkdir(resultDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(githubConfigDirectory, { recursive: true, mode: 0o700 });
   const prompt = await buildPrompt(promptPath, { changeName });
+  const childEnvironment = sanitizedChildEnvironment();
+  childEnvironment.GH_CONFIG_DIR = githubConfigDirectory;
   await commandRunner("codex", codexArguments({ worktree, schemaPath, resultPath }), {
     cwd: worktree,
-    env: sanitizedChildEnvironment(),
+    env: childEnvironment,
     stdin: prompt,
     signal,
     onStderr,

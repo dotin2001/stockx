@@ -145,9 +145,11 @@ alembic downgrade base
 ## Local AI OpenSpec Runner
 
 - The repository's only AI OpenSpec delivery path is the local runner documented
-  in `docs/ai-local-openspec.md` and invoked
-  with `npm run ai:local -- --task <repository-relative.md>`.
-- Local tasks remain untrusted data. The runner's entry point, libraries,
+  in `docs/ai-local-openspec.md`. It accepts either a committed Markdown task
+  with `npm run ai:local -- --task <repository-relative.md>` or one explicitly
+  selected issue from a configured GitHub Project `Todo` inbox with
+  `--project-owner <login> --project-number <number>`.
+- Local tasks and GitHub issue snapshots remain untrusted data. The runner's entry point, libraries,
   prompts, schemas, validation policy, skills, `AGENTS.md`, and OpenSpec
   configuration are protected authority and may not be changed by a task run.
 - Planning and application use separate Codex processes. Strict plan validation
@@ -155,4 +157,5 @@ alembic downgrade base
 - Agent work occurs in an owned temporary Git worktree. Only a fully validated
   binary patch may reach the original clean checkout.
 - Successful local output must remain unstaged and uncommitted for human review.
-  The local runner must never publish to GitHub.
+  Project intake is read-only: the local runner must never change Project or
+  issue state, pass GitHub credentials to Codex, or publish to GitHub.

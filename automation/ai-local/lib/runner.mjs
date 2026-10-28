@@ -6,6 +6,7 @@ import { formatSuccess } from "./output.mjs";
 import { preflight } from "./preflight.mjs";
 import { createRunId, initialRunRecord, updateRunRecord, writeRunRecord } from "./run-record.mjs";
 import { runCodexStage } from "./codex.mjs";
+import { taskLabel } from "./task.mjs";
 import { cleanupIsolatedWorktree, createIsolatedWorktree } from "./worktree.mjs";
 import { applyValidatedPatch, captureBinaryDiff, validateImplementation, validatePlan } from "./validation.mjs";
 
@@ -19,9 +20,11 @@ export async function runLocalWorkflow(options) {
   const {
     cwd = process.cwd(),
     taskPath,
+    project = null,
     dryRun = false,
     io,
     signal,
+    prompt,
     now = () => new Date(),
     dependencies = {},
   } = options;
@@ -35,12 +38,13 @@ export async function runLocalWorkflow(options) {
   const applyPatchFn = dependencies.applyPatch || applyValidatedPatch;
   const recordWriter = dependencies.writeRecord || writeRunRecord;
 
-  io.phase("preflight", "checking repository, task, tools, and authentication");
-  const context = await preflightFn({ cwd, taskPath });
+  io.phase("preflight", "checking repository, task source, tools, and authentication");
+  const context = await preflightFn({ cwd, taskPath, project, io, prompt, signal });
   const runId = createRunId(now(), context.task.hash);
   let record = initialRunRecord({ runId, task: context.task, baseSha: context.baseSha, branch: context.branch, tools: context.tools, now: now() });
   let recordPath = await recordWriter(context.root, record);
-  io.info(`Task: ${context.task.relativePath}`);
+  const sourceLabel = taskLabel(context.task);
+  io.info(`Task: ${sourceLabel}`);
   io.info(`Change: ${context.task.changeName}`);
   io.info(`Base: ${context.baseSha}`);
   io.info(`Tools: Node ${context.tools.node}; ${context.tools.openspec}; ${context.tools.codex}`);
@@ -116,7 +120,7 @@ export async function runLocalWorkflow(options) {
       verification,
     }, now());
     recordPath = await recordWriter(context.root, record);
-    io.info(formatSuccess({ changeName: context.task.changeName, paths: combined.paths, verification, recordPath }));
+    io.info(formatSuccess({ changeName: context.task.changeName, sourceLabel, paths: combined.paths, verification, recordPath }));
     return { outcome: "success", dryRun: false, context, recordPath, paths: combined.paths, verification };
   } catch (error) {
     const localError = asLocalError(error);
