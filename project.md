@@ -243,3 +243,17 @@ openspec/changes/build-fullstack-marketplace-foundation/
 ```
 
 Review the proposal, design, spec, and tasks there before implementation.
+
+## Local AI OpenSpec Delivery
+
+The repository's only AI OpenSpec delivery process is the local runner documented
+in `docs/ai-local-openspec.md`. A developer supplies one committed Markdown task to
+`npm run ai:local -- --task <path>`. Separate non-interactive Codex processes
+create and apply a deterministic OpenSpec change inside an isolated temporary
+worktree. Trusted validation checks the plan, protected authority paths, task
+completion, changed areas, and base commit before applying an unstaged binary
+patch to the original checkout.
+
+Local delivery never reads GitHub Projects, changes issue state, creates a
+branch or pull request, commits, pushes, or merges. Human review of the local
+diff remains mandatory.

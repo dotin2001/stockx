@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "phase", "outcome", "summary", "verification"],
+  "properties": {
+    "version": { "const": 1 },
+    "phase": { "const": "implementation" },
+    "outcome": { "enum": ["success", "failure"] },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "verification": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 500 } }
+  }
+}

@@ -59,3 +59,6 @@ pnpm-debug.log*
 # Coverage reports
 coverage/
 apps/web/coverage/
+
+# Local AI OpenSpec runner state
+.ai-local/
