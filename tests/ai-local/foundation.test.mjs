@@ -3,7 +3,7 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-import { codexArguments } from "../../automation/ai-local/lib/codex.mjs";
+import { CODEX_MODEL, codexArguments } from "../../automation/ai-local/lib/codex.mjs";
 import { parseCliArgs } from "../../automation/ai-local/lib/cli.mjs";
 import { parseAgentResult } from "../../automation/ai-local/lib/contracts.mjs";
 import { LocalRunError, sanitizeText } from "../../automation/ai-local/lib/errors.mjs";
@@ -118,9 +118,13 @@ test("agent result contracts reject malformed, extra, and phase-inconsistent out
   assert.throws(() => parseAgentResult(JSON.stringify({ ...valid, phase: "implementation", outcome: "clarification", verification: [] }), "implementation"), /outcome/);
 });
 
-test("Codex arguments are shell-free, ephemeral, workspace-write, structured, and non-dangerous", () => {
+test("Codex arguments pin the trusted model and remain shell-free, ephemeral, structured, and non-dangerous", () => {
   const args = codexArguments({ worktree: "/tmp/work", schemaPath: "/repo/schema.json", resultPath: "/tmp/result.json" });
-  assert.deepEqual(args.slice(0, 6), ["exec", "--ephemeral", "--ignore-user-config", "--sandbox", "workspace-write", "--cd"]);
+  const untrustedOverride = codexArguments({ worktree: "/tmp/work", schemaPath: "/repo/schema.json", resultPath: "/tmp/result.json", model: "gpt-6-astra" });
+  assert.equal(CODEX_MODEL, "gpt-5.6-sol");
+  assert.deepEqual(args.slice(0, 5), ["exec", "--ephemeral", "--ignore-user-config", "--model", "gpt-5.6-sol"]);
+  assert.deepEqual(untrustedOverride, args);
+  assert.deepEqual(args.slice(5, 8), ["--sandbox", "workspace-write", "--cd"]);
   assert.ok(args.includes("--output-schema"));
   assert.ok(args.includes("--output-last-message"));
   assert.ok(args.includes("-"));
@@ -160,23 +164,23 @@ test("repository and tool preflight fail closed on dirty or incompatible state",
 
   const fake = async (command, args) => {
     if (command === "openspec") return { stdout: "2.0.0\n", stderr: "" };
-    if (command === "codex" && args[0] === "exec") return { stdout: "--ephemeral --sandbox --output-schema --output-last-message --ignore-user-config", stderr: "" };
+    if (command === "codex" && args[0] === "exec") return { stdout: "--ephemeral --sandbox --output-schema --output-last-message --ignore-user-config --model", stderr: "" };
     if (command === "codex" && args[0] === "login") return { stdout: "Logged in", stderr: "" };
     return { stdout: `${command} version\n`, stderr: "" };
   };
   await assert.rejects(() => inspectTools(root, fake, {}), /1\.12/);
 
-  const flagsMissing = async (command, args) => {
+  const modelFlagMissing = async (command, args) => {
     if (command === "openspec") return { stdout: "1.12.0\n", stderr: "" };
-    if (command === "codex" && args[0] === "exec") return { stdout: "--ephemeral --sandbox", stderr: "" };
+    if (command === "codex" && args[0] === "exec") return { stdout: "--ephemeral --sandbox --output-schema --output-last-message --ignore-user-config", stderr: "" };
     if (command === "codex" && args[0] === "login") return { stdout: "Logged in", stderr: "" };
     return { stdout: `${command} version\n`, stderr: "" };
   };
-  await assert.rejects(() => inspectTools(root, flagsMissing, {}), /required flag/);
+  await assert.rejects(() => inspectTools(root, modelFlagMissing, {}), /required flag --model/);
 
   const authMissing = async (command, args) => {
     if (command === "openspec") return { stdout: "1.12.0\n", stderr: "" };
-    if (command === "codex" && args[0] === "exec") return { stdout: "--ephemeral --sandbox --output-schema --output-last-message --ignore-user-config", stderr: "" };
+    if (command === "codex" && args[0] === "exec") return { stdout: "--ephemeral --sandbox --output-schema --output-last-message --ignore-user-config --model", stderr: "" };
     if (command === "codex" && args[0] === "login") return { stdout: "Not logged in", stderr: "" };
     return { stdout: `${command} version\n`, stderr: "" };
   };
@@ -200,7 +204,7 @@ test("Project preflight checks clean local state before intake and Markdown mode
     calls.push(`${command}:${args.join(" ")}`);
     if (command === "git") return runProcess(command, args, options);
     if (command === "openspec") return { stdout: "1.12.0\n", stderr: "" };
-    if (command === "codex" && args[0] === "exec") return { stdout: "--ephemeral --sandbox --output-schema --output-last-message --ignore-user-config", stderr: "" };
+    if (command === "codex" && args[0] === "exec") return { stdout: "--ephemeral --sandbox --output-schema --output-last-message --ignore-user-config --model", stderr: "" };
     if (command === "codex" && args[0] === "login") return { stdout: "Logged in", stderr: "" };
     return { stdout: `${command} version\n`, stderr: "" };
   };

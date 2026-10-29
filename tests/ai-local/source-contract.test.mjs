@@ -21,6 +21,8 @@ test("local runner permits narrow GitHub reads but no mutation, publication, or 
   assert.doesNotMatch(codex, /danger-full-access|approve-for-me|bypass-approvals/);
   assert.match(codex, /workspace-write/);
   assert.match(codex, /--ephemeral/);
+  assert.match(codex, /--model/);
+  assert.match(codex, /CODEX_MODEL = "gpt-5\.6-sol"/);
   assert.match(processSource, /CODEX_API_KEY/);
   assert.doesNotMatch(processSource.match(/const PASSTHROUGH_ENV = \[[\s\S]*?\];/)?.[0] || "", /GITHUB_TOKEN|AI_PROJECT_TOKEN|OPENAI_API_KEY/);
   assert.doesNotMatch(githubSource.match(/const GITHUB_ENV_KEYS = \[[\s\S]*?\];/)?.[0] || "", /GITHUB_TOKEN|GH_TOKEN|AI_PROJECT_TOKEN|CODEX_API_KEY|CODEX_ACCESS_TOKEN/);

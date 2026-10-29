@@ -4,11 +4,14 @@ import path from "node:path";
 import { readAgentResult } from "./contracts.mjs";
 import { runProcess, sanitizedChildEnvironment } from "./process.mjs";
 
+export const CODEX_MODEL = "gpt-5.6-sol";
+
 export function codexArguments({ worktree, schemaPath, resultPath }) {
   return [
     "exec",
     "--ephemeral",
     "--ignore-user-config",
+    "--model", CODEX_MODEL,
     "--sandbox", "workspace-write",
     "--cd", worktree,
     "--output-schema", schemaPath,

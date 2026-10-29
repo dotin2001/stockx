@@ -15,7 +15,7 @@ merges, or invokes GitHub Actions.
 - Node.js 18.18 or newer.
 - OpenSpec 1.12.x available as `openspec`.
 - A Codex CLI that supports `exec`, `--ephemeral`, `--ignore-user-config`,
-  `--sandbox`, `--output-schema`, and `--output-last-message`.
+  `--model`, `--sandbox`, `--output-schema`, and `--output-last-message`.
 - A completely clean working tree, including no untracked files.
 - Writable operating-system temporary storage.
 
@@ -159,9 +159,10 @@ operator updates Project status manually after review.
 9. `apply`: recheck the original checkout and apply the binary patch unstaged.
 10. `complete`: remove the temporary worktree and report paths and checks.
 
-Codex uses an ephemeral session, ignored user configuration, and the
-`workspace-write` sandbox. Automatic approval and danger-full-access are never
-enabled.
+Codex uses the repository-pinned `gpt-5.6-sol` model, an ephemeral session,
+ignored user configuration, and the `workspace-write` sandbox for both planning
+and implementation. Task and issue content cannot override the selected model.
+Automatic approval and danger-full-access are never enabled.
 
 ## Review the result
 

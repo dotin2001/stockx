@@ -48,7 +48,7 @@ export async function inspectTools(root, commandRunner = runProcess, env = proce
   ]);
   const openspecVersion = version(openspec.stdout || openspec.stderr);
   assertLocal(/^1\.12(?:\.|$)/.test(openspecVersion), "OPENSPEC_VERSION", `OpenSpec 1.12.x is required; found ${openspecVersion}`);
-  for (const flag of ["--ephemeral", "--sandbox", "--output-schema", "--output-last-message", "--ignore-user-config"]) {
+  for (const flag of ["--ephemeral", "--sandbox", "--output-schema", "--output-last-message", "--ignore-user-config", "--model"]) {
     assertLocal(execHelp.stdout.includes(flag), "CODEX_FLAGS", `Installed Codex CLI does not support required flag ${flag}`);
   }
   let auth = "invocation-token";
