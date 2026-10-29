@@ -4,9 +4,12 @@ import os from "node:os";
 import path from "node:path";
 
 import { assertLocal, LocalRunError } from "./errors.mjs";
+import { hashApprovedPlan, inspectApprovedPlanCheckout } from "./approved-plan.mjs";
 import { loadGitHubProjectTask } from "./github-project.mjs";
 import { runProcess } from "./process.mjs";
+import { findPendingStatusRecord, findSuccessfulPlanRecord } from "./run-record.mjs";
 import { resolveTaskFile } from "./task.mjs";
+import { validatePlan } from "./validation.mjs";
 import { findOwnedStaleWorktrees } from "./worktree.mjs";
 
 function version(output) {
@@ -121,5 +124,34 @@ export async function preflight({
   } catch (error) {
     if (error instanceof LocalRunError) throw error;
     throw new LocalRunError("PREFLIGHT", `Local preflight failed: ${error?.message || error}`);
+  }
+}
+
+export async function preflightApply({ cwd = process.cwd(), changeName, commandRunner = runProcess, env = process.env }) {
+  try {
+    const root = await discoverRepository(cwd, commandRunner);
+    const planRecord = await findSuccessfulPlanRecord(root, changeName);
+    const repository = await inspectApprovedPlanCheckout(root, changeName, commandRunner);
+    const stale = await findOwnedStaleWorktrees(root);
+    assertLocal(stale.length === 0, "STALE_WORKTREE", `Found ${stale.length} stale ai-local worktree(s); follow the documented cleanup procedure`);
+    await inspectTemporaryStorage();
+    const approvedPlan = await hashApprovedPlan(root, changeName);
+    await validatePlan({ root, changeName, paths: approvedPlan.paths, commandRunner });
+    const tools = await inspectTools(root, commandRunner, env);
+    return { root, planRecord, approvedPlan, ...repository, tools };
+  } catch (error) {
+    if (error instanceof LocalRunError) throw error;
+    throw new LocalRunError("APPLY_PREFLIGHT", `Apply preflight failed: ${error?.message || error}`);
+  }
+}
+
+export async function preflightStatusSync({ cwd = process.cwd(), changeName, commandRunner = runProcess }) {
+  try {
+    const root = await discoverRepository(cwd, commandRunner);
+    const pendingRecord = await findPendingStatusRecord(root, changeName);
+    return { root, pendingRecord };
+  } catch (error) {
+    if (error instanceof LocalRunError) throw error;
+    throw new LocalRunError("STATUS_SYNC_PREFLIGHT", `Status-sync preflight failed: ${error?.message || error}`);
   }
 }

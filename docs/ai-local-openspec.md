@@ -1,23 +1,31 @@
 # Local AI OpenSpec Runner
 
-The local runner turns one explicitly selected task into an OpenSpec-planned,
-validated implementation in the current repository. A task can come from a
-committed Markdown file or from an issue selected from a GitHub Project inbox.
-Both modes run on this computer and leave an unstaged diff for human review.
+`ai:local` is a two-stage, human-approved delivery flow:
 
-The GitHub Project mode is read-only. It never changes Project status, edits or
-comments on an issue, creates a commit or branch, pushes, opens a pull request,
-merges, or invokes GitHub Actions.
+```text
+Todo issue or Markdown task
+  -> isolated OpenSpec proposal
+  -> validated plan saved unstaged
+  -> STOP for human review
+  -> explicit --apply approval
+  -> isolated implementation and verification
+  -> local unstaged implementation
+  -> selected Project item becomes Done or Blocked
+```
 
-## Common prerequisites
+Planning and implementation are different commands and different Codex
+processes. The runner never commits, stages, pushes, opens a pull request,
+merges, edits an issue, or invokes GitHub Actions.
 
-- Git and an attached local branch.
+## Prerequisites
+
+- Git with an attached branch.
 - Node.js 18.18 or newer.
 - OpenSpec 1.12.x available as `openspec`.
-- A Codex CLI that supports `exec`, `--ephemeral`, `--ignore-user-config`,
-  `--model`, `--sandbox`, `--output-schema`, and `--output-last-message`.
-- A completely clean working tree, including no untracked files.
+- Codex CLI with `exec`, `--ephemeral`, `--ignore-user-config`, `--model`,
+  `--sandbox`, `--output-schema`, and `--output-last-message`.
 - Writable operating-system temporary storage.
+- A completely clean checkout before starting a new plan.
 
 Check Codex authentication without displaying credentials:
 
@@ -25,56 +33,29 @@ Check Codex authentication without displaying credentials:
 codex login status
 ```
 
-The runner normally reuses the authenticated Codex session. Invocation-scoped
+The runner uses the repository-pinned `gpt-5.6-sol` model. Invocation-scoped
 `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` values are passed only to Codex and are
-never read, printed, or recorded. Do not put credentials in tasks or issues.
+never read, printed, or recorded.
 
-## Markdown task mode
-
-The task must be a committed, non-symlink `.md` file inside this repository with
-a first-level heading:
-
-```markdown
-# Add catalog empty state
-
-Describe the user-visible behavior and acceptance criteria here.
-```
-
-Run preflight only:
-
-```bash
-npm run ai:local -- --task tasks/catalog-empty-state.md --dry-run
-```
-
-Run planning and implementation:
-
-```bash
-npm run ai:local -- --task tasks/catalog-empty-state.md
-```
-
-The heading creates a bounded identity such as `local-add-catalog-empty-state`.
-The runner refuses to overwrite an existing OpenSpec change with that name.
-Markdown mode does not require GitHub CLI or GitHub authentication.
-
-## GitHub Project inbox mode
-
-Project mode additionally requires GitHub CLI. On macOS it can be installed with
-Homebrew; use the equivalent package for other platforms:
+GitHub Project intake and terminal status updates require the local GitHub CLI
+session to have Project access:
 
 ```bash
 brew install gh
 gh auth login
-gh auth refresh -s read:project
+gh auth refresh -s project
 gh auth status
 ```
 
-The authenticated account must be able to read the Project and every issue you
-intend to select. GitHub credentials remain in the local `gh` session and are
-not passed to Codex.
+GitHub credentials remain in the host-side `gh` process and are never passed to
+Codex.
 
-### Interactive selection
+## Stage 1: create a plan
 
-From a clean checkout, supply the Project owner and Project number:
+### Plan from one selected GitHub issue
+
+To list the configured Project's eligible `Status = Todo` issues and choose one
+interactively:
 
 ```bash
 npm run ai:local -- \
@@ -82,19 +63,7 @@ npm run ai:local -- \
   --project-number 7
 ```
 
-The command reads every Project item across all pages, keeps only GitHub Issues
-whose single-select field exactly matches `Status = Todo`, sorts them by
-repository and issue number, and prints a numbered list. Pull requests, draft
-items, other statuses, redacted items, and malformed entries are excluded. Pick
-one number or enter `q` to cancel.
-
-Only the selected issue executes. Immediately before planning, the runner reads
-it again and stops if it moved out of `Todo`, disappeared, or changed identity.
-
-### Explicit selection
-
-When stdin is not interactive, or when selecting deterministically, add the
-canonical issue identity:
+To select one issue deterministically:
 
 ```bash
 npm run ai:local -- \
@@ -103,70 +72,184 @@ npm run ai:local -- \
   --issue 'OWNER/REPOSITORY#123'
 ```
 
-The issue must still be present in the configured Project inbox. `--issue` does
-not bypass Project status filtering.
+For this repository's Project 1 and issue 5:
 
-Projects with different field names or option values can override the exact,
-case-sensitive defaults:
+```bash
+npm run ai:local -- \
+  --project-owner dotin2001 \
+  --project-number 1 \
+  --issue 'dotin2001/stockx#5'
+```
+
+The issue must be in the configured Project and still have the exact source
+status. Pull requests, draft items, redacted items, unsupported content, and
+other statuses are excluded. Immediately before planning, the selected item is
+refreshed and its identity and status are checked again.
+
+Projects with different single-select names can freeze their values into the
+plan record:
 
 ```bash
 npm run ai:local -- \
   --project-owner OWNER \
   --project-number 7 \
   --status-field Workflow \
-  --status-value Ready
+  --status-value Ready \
+  --done-status Complete \
+  --blocked-status Blocked \
+  --issue 'OWNER/REPOSITORY#123'
 ```
 
-### Project dry run
+The source, done, and blocked values must be distinct and are matched exactly.
 
-Dry run performs the clean-checkout checks, reads the entire inbox, selects and
-refreshes one issue, validates the deterministic change identity and local tool
-setup, and writes an ignored run record. It does not create a worktree or start
-Codex:
+### Plan from a Markdown task
+
+The task must be a committed, non-symlink `.md` file inside the repository with
+a first-level heading:
+
+```bash
+npm run ai:local -- --task tasks/catalog-empty-state.md
+```
+
+Markdown mode requires no GitHub CLI and never changes external state.
+
+### Plan dry run
+
+Add `--dry-run` to either intake form. Project dry run reads, selects, and
+refreshes the issue and verifies local prerequisites. It does not create a
+worktree or invoke Codex.
 
 ```bash
 npm run ai:local -- \
-  --project-owner OWNER \
-  --project-number 7 \
-  --issue 'OWNER/REPOSITORY#123' \
+  --project-owner dotin2001 \
+  --project-number 1 \
+  --issue 'dotin2001/stockx#5' \
   --dry-run
 ```
 
+### Plan output and review
+
+A successful plan run performs only:
+
+1. Clean-checkout and source preflight.
+2. Owned detached temporary worktree creation.
+3. One Codex OpenSpec propose process.
+4. Plan-only path checks and strict OpenSpec validation.
+5. Application of only `openspec/changes/<change-name>/` as unstaged changes.
+6. Temporary worktree cleanup and an exact `--apply` command.
+
+It does not run implementation and does not change Project status. Review every
+artifact, not only the specification:
+
+```text
+openspec/changes/<change-name>/.openspec.yaml
+openspec/changes/<change-name>/proposal.md
+openspec/changes/<change-name>/design.md
+openspec/changes/<change-name>/specs/*/spec.md
+openspec/changes/<change-name>/tasks.md
+```
+
+You may edit those plan files before approval. They must still pass strict
+OpenSpec validation.
+
+## Stage 2: approve and apply
+
+The apply command is the explicit human approval action:
+
+```bash
+npm run ai:local -- --apply <change-name>
+```
+
+Example for issue 5:
+
+```bash
+npm run ai:local -- \
+  --apply local-gh-dotin2001-stockx-5-0c4efdf802
+```
+
+The plan may remain unstaged and uncommitted, or it may be committed. For an
+uncommitted plan, every checkout change must remain inside that exact OpenSpec
+change directory and the index must be empty. Apply rejects unrelated or staged
+changes.
+
+Apply requires the successful ignored plan record from the same machine. The
+record binds the change to its original task or selected Project item. Copying
+only the OpenSpec directory to another machine does not grant Project mutation
+authority.
+
+Before Codex starts, apply strictly validates the current artifacts and hashes
+the human-approved contract. Implementation may update task checkbox states but
+cannot rewrite proposal, design, specification, schema metadata, or task text.
+It must produce non-planning changes, complete every task, and pass trusted
+changed-area checks.
+
+Test apply preflight without invoking Codex or changing the Project:
+
+```bash
+npm run ai:local -- --apply <change-name> --dry-run
+```
+
+## GitHub Project status outcomes
+
+Only GitHub-backed apply runs can mutate Project state. The host runner resolves
+the recorded Project, selected item, status field, and allowlisted option IDs.
+Issue or plan text cannot choose a different item, field, or status.
+
+| Apply outcome | Project result |
+|---|---|
+| Validated implementation patch reaches the local checkout | `Done` |
+| Structured missing requirement, external dependency, or required human decision | `Blocked` |
+| Token/capacity failure, interruption, command failure, failed verification, invalid output, or checkout drift | remains source status, normally `Todo` |
+
+Technical failures leave the Project item in its source status and remain safe
+to retry after the underlying problem is corrected.
+
+`Done` means the verified implementation reached the local checkout as unstaged
+changes. It does not mean the code was committed, pushed, or merged.
+
+Partial output from a blocked implementation is discarded. No implementation
+patch reaches the checkout before `Blocked` is set.
+
+## Status-sync recovery
+
+Local patch application and a remote Project update cannot be atomic. If the
+local implementation succeeds but the status update fails, the patch remains
+in the checkout and the run record keeps one pending allowlisted transition.
+Retry only that transition without rerunning Codex:
+
+```bash
+npm run ai:local -- --sync-status <change-name>
+```
+
+The retry is idempotent: if GitHub accepted the earlier update but the local
+process failed before recording it, synchronization succeeds without changing
+anything else. A missing or ambiguous pending record is rejected.
+
 ## Security boundary
 
-Markdown and GitHub issue text are untrusted context. They cannot select
-commands, credentials, sandbox modes, protected paths, validation policy, or
-publication behavior. Project mode snapshots allowlisted issue metadata, title,
-body, and canonical URL; the body exists only in the owned temporary worktree.
+Task and issue content are untrusted during planning. They cannot change the
+model, prompts, schema, sandbox, credentials, commands, protected paths, or
+publication policy. During apply, only the human-reviewed OpenSpec artifacts are
+task context.
 
-GitHub issue identity, not its editable title, determines the OpenSpec change
-name. Rerunning an issue whose deterministic change already exists fails rather
-than overwriting it. A successful run does not move the issue out of `Todo`; the
-operator updates Project status manually after review.
+Both Codex stages use an ephemeral session, ignored user configuration,
+`gpt-5.6-sol`, and the `workspace-write` sandbox. Codex receives no GitHub
+credentials. The host runner's only GitHub mutation is the exact selected
+Project item's recorded single-select status field.
 
-## Execution phases
+## Run records
 
-1. `preflight`: verify the clean attached checkout and local safety state.
-2. `inbox` for Project mode: read all eligible issues, select one, and refresh
-   its immutable snapshot.
-3. Complete tool/authentication and deterministic collision checks.
-4. `worktree`: create an owned detached temporary worktree at the current commit.
-5. `planning`: invoke Codex with the trusted propose prompt.
-6. Strictly validate the OpenSpec plan before implementation starts.
-7. `implementation`: invoke a separate Codex process with the accepted plan.
-8. `validation`: reject protected paths and incomplete tasks, validate OpenSpec,
-   and run trusted changed-area checks.
-9. `apply`: recheck the original checkout and apply the binary patch unstaged.
-10. `complete`: remove the temporary worktree and report paths and checks.
+Ignored version 3 records live under `.ai-local/runs/`. They contain allowlisted
+source identity, mode, task and plan hashes, base commit, phases, outcomes,
+changed paths, verification names, parent plan identity, and pending or completed
+status synchronization.
 
-Codex uses the repository-pinned `gpt-5.6-sol` model, an ephemeral session,
-ignored user configuration, and the `workspace-write` sandbox for both planning
-and implementation. Task and issue content cannot override the selected model.
-Automatic approval and danger-full-access are never enabled.
+They exclude task and issue bodies, titles, prompts, raw model transcripts, raw
+GitHub responses, environment dumps, and credentials.
 
-## Review the result
+## Review and recovery
 
-Successful output remains uncommitted and unstaged:
+Inspect successful plan or implementation output with:
 
 ```bash
 git status --short
@@ -174,49 +257,25 @@ git diff --check
 git diff
 ```
 
-Rerun the reported checks and commit only after human review. To discard work,
-restore only explicit reviewed paths; do not use a repository-wide destructive
-reset or clean command.
+Do not use a repository-wide destructive reset or clean command to discard work.
+Restore only explicit reviewed paths.
 
-## Failure and recovery
+Common errors:
 
-- `GITHUB_CLI`: install `gh`, then confirm `gh --version`.
-- `GITHUB_AUTH`: run `gh auth login` and grant Project read access.
-- `GITHUB_PROJECT_ACCESS`: confirm the owner/number and run
-  `gh auth refresh -s read:project`.
-- `GITHUB_INBOX_EMPTY`: no issue exactly matches the configured status.
-- `GITHUB_ISSUE_SELECTOR`: use the displayed canonical `owner/repo#number`.
-- `GITHUB_ISSUE_STALE`: refresh the inbox because the selection changed.
-- Planning clarification, invalid plans, failed implementation checks, checkout
-  drift, and patch conflicts leave the original checkout unchanged.
-- Interruptions attempt to stop Codex and remove the owned worktree.
+- `PLAN_RECORD_MISSING`: apply must run on the machine that created the plan.
+- `WORKTREE_DIRTY`: remove, commit, or move unrelated checkout changes.
+- `GITHUB_AUTH`: run `gh auth login` and grant Project access.
+- `GITHUB_ISSUE_STALE`: reconcile the item because its identity or status changed.
+- `GITHUB_STATUS_FIELD` or `GITHUB_STATUS_OPTION`: verify exact Project field and option names.
+- `STATUS_SYNC_FAILED`: keep the local patch and use the printed `--sync-status` command.
 
-Run records live under `.ai-local/runs/`. Version 2 records contain the task
-hash, allowlisted Markdown path or GitHub issue identity/URL, base commit, tool
-versions, phases, outcome, changed paths, and verification names. They exclude
-task/issue bodies, titles, raw GitHub responses, prompts, transcripts,
-environment dumps, and credentials.
-
-If preflight reports a stale owned worktree, inspect it first:
-
-```bash
-git worktree list
-```
-
-Only operating-system temporary paths named `stockx-ai-local-*` with a matching
-`owner.json` marker belong to this runner. After verifying the exact path is not
-in use, remove that worktree explicitly and run `git worktree prune`.
-
-## Delivery model
-
-`ai:local` is the repository's only AI OpenSpec delivery path. It reads one
-committed Markdown task or one explicitly selected `Todo` Project issue and
-leaves a validated local diff. It does not poll, schedule, batch-execute,
-publish, or mutate GitHub.
+If a stale owned worktree is reported, inspect `git worktree list`. Only temporary
+paths named `stockx-ai-local-*` with a matching `owner.json` marker belong to the
+runner.
 
 ## Tests
 
 ```bash
 npm run ai:local:test
-openspec validate add-local-github-project-inbox --strict
+openspec validate split-ai-local-plan-apply --strict
 ```

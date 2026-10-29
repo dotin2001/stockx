@@ -5,9 +5,11 @@ import { LocalRunError } from "../../automation/ai-local/lib/errors.mjs";
 import {
   listTodoIssues,
   parseIssueSelector,
+  prepareProjectStatus,
   refreshSelectedIssue,
   resolveGitHubProject,
   selectProjectIssue,
+  updateProjectStatus,
 } from "../../automation/ai-local/lib/github-project.mjs";
 
 function result(value) {
@@ -67,6 +69,58 @@ test("GitHub CLI adapter fails closed and resolves readable Project metadata", a
     }),
     (error) => error.code === "GITHUB_PROJECT_RESPONSE",
   );
+});
+
+test("Project status adapter resolves allowlisted options and mutates only the exact item", async () => {
+  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  const calls = [];
+  const item = (status = "Todo") => ({ data: { node: { id: "PVTI_1", fieldValueByName: { name: status }, content: { __typename: "Issue", number: 12, repository: { nameWithOwner: "acme/shop" } } } } });
+  const commandRunner = async (_command, args, options) => {
+    calls.push({ args, options });
+    if (args[0] === "project" && args[1] === "view") return result({ id: "PVT_7", title: "Delivery" });
+    if (args[0] === "project" && args[1] === "field-list") return result({ fields: [{ id: "FIELD_STATUS", name: "Status", options: [{ id: "OPT_TODO", name: "Todo" }, { id: "OPT_DONE", name: "Done" }, { id: "OPT_BLOCKED", name: "Blocked" }] }] });
+    if (args[0] === "api") return result(item());
+    return result("ok");
+  };
+  const prepared = await prepareProjectStatus({ root: "/repo", source, commandRunner });
+  const updated = await updateProjectStatus({ root: "/repo", prepared, target: "done", commandRunner });
+  assert.equal(updated.status, "Done");
+  const mutation = calls.find((call) => call.args[0] === "project" && call.args[1] === "item-edit");
+  assert.deepEqual(mutation.args, ["project", "item-edit", "--id", "PVTI_1", "--project-id", "PVT_7", "--field-id", "FIELD_STATUS", "--single-select-option-id", "OPT_DONE"]);
+  assert.equal(mutation.options.env.GITHUB_TOKEN, undefined);
+  await assert.rejects(() => updateProjectStatus({ root: "/repo", prepared, target: "Doing", commandRunner }), /allowlisted/);
+});
+
+test("Project status adapter fails closed on missing options and identity drift", async () => {
+  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  const baseRunner = async (_command, args) => {
+    if (args[0] === "project" && args[1] === "view") return result({ id: "PVT_7" });
+    if (args[0] === "project" && args[1] === "field-list") return result({ fields: [{ id: "FIELD", name: "Status", options: [{ id: "DONE", name: "Done" }] }] });
+    if (args[0] === "api") return result({ data: { node: { id: "PVTI_1", fieldValueByName: { name: "Todo" }, content: { __typename: "Issue", number: 12, repository: { nameWithOwner: "acme/shop" } } } } });
+    return result("ok");
+  };
+  await assert.rejects(() => prepareProjectStatus({ root: "/repo", source, commandRunner: baseRunner }), (error) => error.code === "GITHUB_STATUS_OPTION");
+  await assert.rejects(() => prepareProjectStatus({ root: "/repo", source, commandRunner: async (_command, args) => {
+    if (args[0] === "project" && args[1] === "view") return result({ id: "PVT_7" });
+    if (args[0] === "api") return result({ data: { node: { id: "PVTI_1", fieldValueByName: { name: "Todo" }, content: { __typename: "Issue", number: 99, repository: { nameWithOwner: "acme/shop" } } } } });
+    return result("ok");
+  } }), (error) => error.code === "GITHUB_ISSUE_STALE");
+});
+
+test("status retry is idempotent when the recorded target is already current", async () => {
+  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  let mutations = 0;
+  const runner = async (_command, args) => {
+    if (args[0] === "project" && args[1] === "view") return result({ id: "PVT_7" });
+    if (args[0] === "project" && args[1] === "field-list") return result({ fields: [{ id: "FIELD", name: "Status", options: [{ id: "DONE", name: "Done" }, { id: "BLOCKED", name: "Blocked" }] }] });
+    if (args[0] === "project" && args[1] === "item-edit") { mutations += 1; return result("ok"); }
+    if (args[0] === "api") return result({ data: { node: { id: "PVTI_1", fieldValueByName: { name: "Done" }, content: { __typename: "Issue", number: 12, repository: { nameWithOwner: "acme/shop" } } } } });
+    return result("ok");
+  };
+  const prepared = await prepareProjectStatus({ root: "/repo", source, target: "done", commandRunner: runner });
+  const synced = await updateProjectStatus({ root: "/repo", prepared, target: "done", commandRunner: runner });
+  assert.equal(synced.alreadyCurrent, true);
+  assert.equal(mutations, 0);
 });
 
 test("Project pagination returns every exact Todo issue and excludes unsupported items", async () => {

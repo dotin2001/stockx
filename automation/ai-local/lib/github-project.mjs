@@ -58,6 +58,25 @@ const PROJECT_ITEM_QUERY = `query($item: ID!, $statusField: String!) {
   }
 }`;
 
+function statusConfig(source) {
+  assertLocal(source?.kind === "github-issue", "GITHUB_STATUS_SOURCE", "Project status updates require a GitHub issue source");
+  const config = {
+    projectOwner: String(source.projectOwner || ""),
+    projectNumber: Number(source.projectNumber),
+    itemId: String(source.itemId || ""),
+    repository: String(source.repository || ""),
+    issueNumber: Number(source.issueNumber),
+    statusField: String(source.statusField || "Status"),
+    statusValue: String(source.statusValue || "Todo"),
+    doneStatus: String(source.doneStatus || "Done"),
+    blockedStatus: String(source.blockedStatus || "Blocked"),
+  };
+  assertLocal(config.projectOwner && Number.isInteger(config.projectNumber) && config.projectNumber > 0 && config.itemId, "GITHUB_STATUS_SOURCE", "Recorded Project identity is invalid");
+  assertLocal(config.repository && Number.isInteger(config.issueNumber) && config.issueNumber > 0, "GITHUB_STATUS_SOURCE", "Recorded issue identity is invalid");
+  assertLocal(config.statusField && new Set([config.statusValue, config.doneStatus, config.blockedStatus]).size === 3, "GITHUB_STATUS_SOURCE", "Recorded Project status configuration is invalid");
+  return config;
+}
+
 export function githubEnvironment(source = process.env) {
   return Object.fromEntries(GITHUB_ENV_KEYS.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
 }
@@ -112,6 +131,69 @@ async function graphql({ root, query, variables, commandRunner, signal }) {
   const value = parseJson(result.stdout, "GITHUB_PROJECT_RESPONSE", "GitHub Project API returned invalid JSON");
   assertLocal(!Array.isArray(value?.errors) || value.errors.length === 0, "GITHUB_PROJECT_READ", "GitHub Project API returned an incomplete response");
   return value;
+}
+
+async function readRecordedItem({ root, config, commandRunner, signal }) {
+  const response = await graphql({ root, query: PROJECT_ITEM_QUERY, variables: { item: config.itemId, statusField: config.statusField }, commandRunner, signal });
+  const node = response?.data?.node;
+  const content = node?.content;
+  assertLocal(node?.id === config.itemId && content?.__typename === "Issue", "GITHUB_ISSUE_STALE", "Recorded Project item is no longer available");
+  assertLocal(content.repository?.nameWithOwner === config.repository && Number(content.number) === config.issueNumber, "GITHUB_ISSUE_STALE", "Recorded Project item identity changed");
+  const currentStatus = node.fieldValueByName?.name;
+  assertLocal(typeof currentStatus === "string" && currentStatus.length > 0, "GITHUB_STATUS_FIELD", `Recorded item has no ${config.statusField} value`);
+  return currentStatus;
+}
+
+export async function prepareProjectStatus({ root, source, target = null, commandRunner = runProcess, signal }) {
+  const config = statusConfig(source);
+  const project = await resolveGitHubProject({ root, owner: config.projectOwner, number: config.projectNumber, commandRunner, signal });
+  const currentStatus = await readRecordedItem({ root, config, commandRunner, signal });
+  assertLocal(target === null || ["done", "blocked"].includes(target), "GITHUB_STATUS_TARGET", "Project status target is not allowlisted");
+  const desired = target === "done" ? config.doneStatus : target === "blocked" ? config.blockedStatus : null;
+  assertLocal(currentStatus === config.statusValue || currentStatus === desired, "GITHUB_ISSUE_STALE", `Selected issue is no longer in ${config.statusValue}${desired ? ` or ${desired}` : ""}`);
+  let fieldsResult;
+  try {
+    fieldsResult = await github(commandRunner, root, ["project", "field-list", String(config.projectNumber), "--owner", config.projectOwner, "--format", "json"], signal);
+  } catch {
+    throw new LocalRunError("GITHUB_STATUS_FIELD", "GitHub Project fields could not be read; verify Project write access");
+  }
+  const value = parseJson(fieldsResult.stdout, "GITHUB_PROJECT_RESPONSE", "GitHub Project field metadata was not valid JSON");
+  const fields = Array.isArray(value?.fields) ? value.fields : [];
+  const matches = fields.filter((field) => field?.name === config.statusField && typeof field.id === "string" && Array.isArray(field.options));
+  assertLocal(matches.length === 1, "GITHUB_STATUS_FIELD", `Project must contain exactly one single-select field named ${config.statusField}`);
+  const field = matches[0];
+  const optionId = (name) => {
+    const options = field.options.filter((option) => option?.name === name && typeof option.id === "string");
+    assertLocal(options.length === 1, "GITHUB_STATUS_OPTION", `${config.statusField} must contain exactly one ${name} option`);
+    return options[0].id;
+  };
+  return Object.freeze({
+    projectId: project.id,
+    fieldId: field.id,
+    itemId: config.itemId,
+    config: Object.freeze(config),
+    optionIds: Object.freeze({ done: optionId(config.doneStatus), blocked: optionId(config.blockedStatus) }),
+  });
+}
+
+export async function updateProjectStatus({ root, prepared, target, commandRunner = runProcess, signal }) {
+  assertLocal(["done", "blocked"].includes(target), "GITHUB_STATUS_TARGET", "Project status target is not allowlisted");
+  const desired = target === "done" ? prepared.config.doneStatus : prepared.config.blockedStatus;
+  const current = await readRecordedItem({ root, config: prepared.config, commandRunner, signal });
+  if (current === desired) return { status: desired, alreadyCurrent: true };
+  assertLocal(current === prepared.config.statusValue, "GITHUB_ISSUE_STALE", `Project item status changed from ${prepared.config.statusValue} to ${current}`);
+  try {
+    await github(commandRunner, root, [
+      "project", "item-edit",
+      "--id", prepared.itemId,
+      "--project-id", prepared.projectId,
+      "--field-id", prepared.fieldId,
+      "--single-select-option-id", prepared.optionIds[target],
+    ], signal);
+  } catch {
+    throw new LocalRunError("STATUS_SYNC_FAILED", `Could not update the selected Project item to ${desired}`);
+  }
+  return { status: desired, alreadyCurrent: false };
 }
 
 function issueFromNode(node, statusValue) {
@@ -209,11 +291,16 @@ export async function refreshSelectedIssue({ root, selected, project, statusFiel
     title: content.title,
     body: typeof content.body === "string" ? content.body : "",
     url: content.url,
+    statusField,
+    statusValue,
+    doneStatus: project.doneStatus,
+    blockedStatus: project.blockedStatus,
   });
 }
 
 export async function loadGitHubProjectTask({ root, project: options, io, commandRunner = runProcess, prompt, signal }) {
-  const project = await resolveGitHubProject({ root, owner: options.owner, number: options.number, commandRunner, signal });
+  const resolved = await resolveGitHubProject({ root, owner: options.owner, number: options.number, commandRunner, signal });
+  const project = Object.freeze({ ...resolved, doneStatus: options.doneStatus || "Done", blockedStatus: options.blockedStatus || "Blocked" });
   const issues = await listTodoIssues({ root, projectId: project.id, statusField: options.statusField, statusValue: options.statusValue, commandRunner, signal });
   const selected = await selectProjectIssue(issues, {
     selector: options.issueSelector,

@@ -152,10 +152,17 @@ alembic downgrade base
 - Local tasks and GitHub issue snapshots remain untrusted data. The runner's entry point, libraries,
   prompts, schemas, validation policy, skills, `AGENTS.md`, and OpenSpec
   configuration are protected authority and may not be changed by a task run.
-- Planning and application use separate Codex processes. Strict plan validation
-  must succeed before implementation starts.
-- Agent work occurs in an owned temporary Git worktree. Only a fully validated
-  binary patch may reach the original clean checkout.
-- Successful local output must remain unstaged and uncommitted for human review.
-  Project intake is read-only: the local runner must never change Project or
-  issue state, pass GitHub credentials to Codex, or publish to GitHub.
+- Intake is plan-only: planning uses an owned temporary worktree, strict
+  validation must succeed, and only the OpenSpec artifacts reach the checkout.
+  The runner must stop for human review before implementation.
+- `npm run ai:local -- --apply <change-name>` is the explicit approval action.
+  Apply uses a fresh Codex process and temporary worktree, preserves the approved
+  plan contract, and may leave only a fully validated implementation patch
+  unstaged and uncommitted in the checkout.
+- For GitHub-backed plans, the host runner may update only the selected Project
+  item's recorded status field: `Done` after validated local patch application or
+  `Blocked` after a structured task blocker. Technical failures leave the item in
+  its source status. GitHub credentials must never reach Codex, and the runner
+  must never edit issues, commit, push, open pull requests, merge, or publish.
+- A pending terminal status update may be retried only with
+  `npm run ai:local -- --sync-status <change-name>` and a proven local run record.

@@ -10,18 +10,20 @@ import { LocalRunError, sanitizeText } from "../../automation/ai-local/lib/error
 import { githubEnvironment } from "../../automation/ai-local/lib/github-project.mjs";
 import { inspectRepository, inspectTools, preflight } from "../../automation/ai-local/lib/preflight.mjs";
 import { runProcess, sanitizedChildEnvironment } from "../../automation/ai-local/lib/process.mjs";
-import { createRunId, initialRunRecord, updateRunRecord, writeRunRecord } from "../../automation/ai-local/lib/run-record.mjs";
+import { createRunId, findPendingStatusRecord, findSuccessfulPlanRecord, initialRunRecord, updateRunRecord, writeRunRecord } from "../../automation/ai-local/lib/run-record.mjs";
 import { createGitHubIssueTask, resolveTaskFile, slugifyTitle } from "../../automation/ai-local/lib/task.mjs";
 import { git, initRepository, tempDirectory } from "./support/helpers.mjs";
 
 test("CLI accepts mutually exclusive Markdown and Project intake shapes", () => {
-  assert.deepEqual(parseCliArgs(["--task", "tasks/example.md"]), { help: false, mode: "task", taskPath: "tasks/example.md", project: null, dryRun: false });
-  assert.deepEqual(parseCliArgs(["--task=tasks/example.md", "--dry-run"]), { help: false, mode: "task", taskPath: "tasks/example.md", project: null, dryRun: true });
+  assert.deepEqual(parseCliArgs(["--task", "tasks/example.md"]), { help: false, mode: "plan", taskPath: "tasks/example.md", project: null, changeName: null, dryRun: false });
+  assert.deepEqual(parseCliArgs(["--task=tasks/example.md", "--dry-run"]), { help: false, mode: "plan", taskPath: "tasks/example.md", project: null, changeName: null, dryRun: true });
   const project = parseCliArgs(["--project-owner", "acme", "--project-number", "7"], { isTTY: true });
-  assert.deepEqual(project.project, { owner: "acme", number: 7, statusField: "Status", statusValue: "Todo", issueSelector: null, isTTY: true });
+  assert.deepEqual(project.project, { owner: "acme", number: 7, statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked", issueSelector: null, isTTY: true });
   const selected = parseCliArgs(["--project-owner=acme", "--project-number=7", "--status-field", "Workflow", "--status-value", "Ready", "--issue", "acme/shop#12"], { isTTY: false });
   assert.equal(selected.project.issueSelector, "acme/shop#12");
   assert.equal(selected.project.statusField, "Workflow");
+  assert.equal(parseCliArgs(["--apply", "local-change"]).mode, "apply");
+  assert.equal(parseCliArgs(["--sync-status", "local-change"]).mode, "sync-status");
   assert.equal(parseCliArgs(["--help"]).help, true);
   assert.throws(() => parseCliArgs([]), /Usage:/);
   assert.throws(() => parseCliArgs(["--task", "a.md", "--task", "b.md"]), /Usage:/);
@@ -32,6 +34,10 @@ test("CLI accepts mutually exclusive Markdown and Project intake shapes", () => 
   assert.throws(() => parseCliArgs(["--project-owner", "acme", "--project-number", "1"], { isTTY: false }), /requires --issue/);
   assert.throws(() => parseCliArgs(["--project-owner", "acme", "--project-number", "1", "--status-field", ""], { isTTY: true }), /cannot be empty/);
   assert.throws(() => parseCliArgs(["--project-owner", "acme", "--project-number", "1", "--issue", ""], { isTTY: true }), /cannot be empty/);
+  assert.throws(() => parseCliArgs(["--apply", "Bad Change"]), /kebab-case/);
+  assert.throws(() => parseCliArgs(["--apply", "local-a", "--task", "a.md"]), /mutually exclusive/);
+  assert.throws(() => parseCliArgs(["--sync-status", "local-a", "--dry-run"]), /does not accept/);
+  assert.throws(() => parseCliArgs(["--project-owner", "acme", "--project-number", "1", "--done-status", "Todo"], { isTTY: true }), /must be distinct/);
 });
 
 test("task intake derives bounded identity and rejects unsafe task files", async () => {
@@ -116,6 +122,7 @@ test("agent result contracts reject malformed, extra, and phase-inconsistent out
   assert.throws(() => parseAgentResult(JSON.stringify({ ...valid, phase: "implementation" }), "plan"), /phase/);
   assert.throws(() => parseAgentResult(JSON.stringify({ ...valid, outcome: "clarification", verification: ["claimed"] }), "plan"), /cannot claim/);
   assert.throws(() => parseAgentResult(JSON.stringify({ ...valid, phase: "implementation", outcome: "clarification", verification: [] }), "implementation"), /outcome/);
+  assert.equal(parseAgentResult(JSON.stringify({ ...valid, phase: "implementation", outcome: "blocked", verification: [] }), "implementation").outcome, "blocked");
 });
 
 test("Codex arguments pin the trusted model and remain shell-free, ephemeral, structured, and non-dangerous", () => {
@@ -141,7 +148,8 @@ test("run records are atomic allowlisted metadata without task bodies or credent
   const relative = await writeRunRecord(root, record);
   const text = await readFile(path.join(root, relative), "utf8");
   assert.match(text, /local-a/);
-  assert.match(text, /"version": 2/);
+  assert.match(text, /"version": 3/);
+  assert.match(text, /"mode": "plan"/);
   assert.match(text, /tasks\/a\.md/);
   assert.doesNotMatch(text, /sk-test/);
   assert.doesNotMatch(text, /taskBody|environment|transcript/);
@@ -151,6 +159,33 @@ test("run records are atomic allowlisted metadata without task bodies or credent
   const githubText = JSON.stringify(githubRecord);
   assert.match(githubText, /acme\/shop/);
   assert.doesNotMatch(githubText, /Secret title|body secret/);
+});
+
+test("successful plan record discovery is exact and rejects ambiguity", async () => {
+  const root = await tempDirectory();
+  const task = { source: { kind: "markdown", path: "tasks/a.md" }, hash: "a".repeat(64), changeName: "local-a" };
+  let record = initialRunRecord({ runId: "plan-one", task, baseSha: "b".repeat(40), branch: "main", tools: { node: "22", git: "git", openspec: "1.12.0", codex: "1" } });
+  record = updateRunRecord(record, { phase: "complete", outcome: "success", approvedPlanHash: "c".repeat(64) });
+  await writeRunRecord(root, record);
+  assert.equal((await findSuccessfulPlanRecord(root, "local-a")).runId, "plan-one");
+  await assert.rejects(() => findSuccessfulPlanRecord(root, "local-missing"), (error) => error.code === "PLAN_RECORD_MISSING");
+  await writeRunRecord(root, { ...record, runId: "plan-two" });
+  await assert.rejects(() => findSuccessfulPlanRecord(root, "local-a"), (error) => error.code === "PLAN_RECORD_AMBIGUOUS");
+
+  const malformed = await tempDirectory();
+  await mkdir(path.join(malformed, ".ai-local", "runs"), { recursive: true });
+  await writeFile(path.join(malformed, ".ai-local", "runs", "broken.json"), "not json\n");
+  await assert.rejects(() => findSuccessfulPlanRecord(malformed, "local-a"), (error) => error.code === "RUN_RECORD_INVALID");
+});
+
+test("pending status discovery requires a proven GitHub terminal transition", async () => {
+  const root = await tempDirectory();
+  const githubTask = createGitHubIssueTask({ projectOwner: "acme", projectNumber: 7, itemId: "PVTI_1", repository: "acme/shop", number: 12, title: "Task", body: "body", url: "https://github.com/acme/shop/issues/12" });
+  let record = initialRunRecord({ runId: "apply-one", mode: "apply", task: githubTask, baseSha: "b".repeat(40), branch: "main", tools: { node: "22", git: "git", openspec: "1.12.0", codex: "1" } });
+  record = updateRunRecord(record, { phase: "status-sync", outcome: "failure", statusSync: { state: "pending", target: "done", value: "Done" } });
+  await writeRunRecord(root, record);
+  assert.equal((await findPendingStatusRecord(root, githubTask.changeName)).runId, "apply-one");
+  await assert.rejects(() => findPendingStatusRecord(root, "local-missing"), (error) => error.code === "STATUS_SYNC_MISSING");
 });
 
 test("repository and tool preflight fail closed on dirty or incompatible state", async () => {

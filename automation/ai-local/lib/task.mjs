@@ -77,9 +77,14 @@ export function createGitHubIssueTask(snapshot) {
   const title = String(snapshot?.title || "").replace(/[\r\n]+/g, " ").trim();
   const issueBody = typeof snapshot?.body === "string" ? snapshot.body : "";
   const url = String(snapshot?.url || "").trim();
+  const statusField = String(snapshot?.statusField || "Status").trim();
+  const statusValue = String(snapshot?.statusValue || "Todo").trim();
+  const doneStatus = String(snapshot?.doneStatus || "Done").trim();
+  const blockedStatus = String(snapshot?.blockedStatus || "Blocked").trim();
   assertLocal(projectOwner && Number.isInteger(projectNumber) && projectNumber > 0, "GITHUB_ISSUE", "GitHub Project identity is invalid");
   assertLocal(itemId.length > 0 && /^[^/\s]+\/[^/\s]+$/.test(repository), "GITHUB_ISSUE", "GitHub issue identity is invalid");
   assertLocal(Number.isInteger(issueNumber) && issueNumber > 0 && title.length > 0, "GITHUB_ISSUE", "GitHub issue metadata is invalid");
+  assertLocal(statusField && statusValue && doneStatus && blockedStatus && new Set([statusValue, doneStatus, blockedStatus]).size === 3, "GITHUB_ISSUE", "GitHub Project status configuration is invalid");
   let parsedUrl;
   try { parsedUrl = new URL(url); } catch { throw new LocalRunError("GITHUB_ISSUE", "GitHub issue URL is invalid"); }
   assertLocal(parsedUrl.protocol === "https:", "GITHUB_ISSUE", "GitHub issue URL must use HTTPS");
@@ -106,7 +111,7 @@ export function createGitHubIssueTask(snapshot) {
     body,
     hash: sha256(body),
     changeName: `local-${identitySlug}-${identityHash}`,
-    source: { kind: "github-issue", projectOwner, projectNumber, repository, issueNumber, url, itemId },
+    source: { kind: "github-issue", projectOwner, projectNumber, repository, issueNumber, url, itemId, statusField, statusValue, doneStatus, blockedStatus },
   });
 }
 

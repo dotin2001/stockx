@@ -3,15 +3,16 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
+import { hashApprovedPlan } from "../../automation/ai-local/lib/approved-plan.mjs";
 import { cleanupIsolatedWorktree, createIsolatedWorktree, findOwnedStaleWorktrees } from "../../automation/ai-local/lib/worktree.mjs";
 import {
   applyValidatedPatch,
   assertImplementationPaths,
   assertPlanPaths,
   assertSafeRelativePath,
-  assertRunIdentity,
   assertTaskMarkersComplete,
   captureBinaryDiff,
+  captureIndexDiff,
   validateImplementation,
   validatePlan,
   verificationCommandsForPaths,
@@ -122,11 +123,7 @@ test("implementation validation protects authority, task truth, and verification
   await writePlan(root, true);
   await mkdir(path.join(root, "docs"));
   await writeFile(path.join(root, "docs", "feature.md"), "feature\n");
-  await mkdir(path.join(root, ".ai-local", "context"), { recursive: true });
-  const taskBody = Buffer.from("# Task\n");
-  await writeFile(path.join(root, ".ai-local", "context", "task.md"), taskBody);
-  const { createHash } = await import("node:crypto");
-  const taskHash = createHash("sha256").update(taskBody).digest("hex");
+  const approvedPlanHash = (await hashApprovedPlan(root, changeName)).hash;
   const baseSha = git(root, ["rev-parse", "HEAD"]).stdout.trim();
   const captured = await captureBinaryDiff(root, baseSha);
   assertImplementationPaths(captured.paths, changeName);
@@ -140,17 +137,29 @@ test("implementation validation protects authority, task truth, and verification
     root,
     changeName,
     paths: captured.paths,
-    baseSha,
-    taskHash,
+    approvedPlanHash,
     commandRunner: async (command, args, options) => {
       calls.push({ command, args, options });
-      if (command === "git" && args[0] === "rev-parse") return { stdout: `${baseSha}\n`, stderr: "" };
       return { stdout: "", stderr: "" };
     },
   });
   assert.deepEqual(verification, ["git diff --check"]);
-  assert.equal(calls[0].command, "git");
-  await assert.rejects(() => assertRunIdentity({ root, baseSha, taskHash: "c".repeat(64) }), /task context/);
+  assert.equal(calls[0].command, "openspec");
+
+  await writeFile(path.join(root, "openspec", "changes", changeName, "proposal.md"), "# Rewritten\n");
+  await assert.rejects(() => validateImplementation({ root, changeName, paths: captured.paths, approvedPlanHash, commandRunner: async () => ({ stdout: "", stderr: "" }) }), /approved/);
+});
+
+test("implementation diff is captured against the temporary index baseline", async () => {
+  const root = await initRepository();
+  await writePlan(root);
+  git(root, ["add", "openspec"]);
+  await writeFile(path.join(root, "openspec", "changes", changeName, "tasks.md"), "- [x] implement\n");
+  await mkdir(path.join(root, "docs"));
+  await writeFile(path.join(root, "docs", "feature.md"), "feature\n");
+  const captured = await captureIndexDiff(root);
+  assert.deepEqual(captured.paths.sort(), ["docs/feature.md", `openspec/changes/${changeName}/tasks.md`].sort());
+  assert.doesNotMatch(captured.patch, /proposal\.md/);
 });
 
 test("validated binary patch applies unstaged and rejects stale or conflicting targets", async () => {

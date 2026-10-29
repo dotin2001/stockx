@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 
 import { assertLocal, LocalRunError } from "./errors.mjs";
+import { assertApprovedCheckoutUnchanged, hashApprovedPlan } from "./approved-plan.mjs";
 import { runProcess, sanitizedChildEnvironment } from "./process.mjs";
 
 const PROTECTED_PATHS = [
@@ -46,6 +47,20 @@ export async function captureBinaryDiff(root, baseSha, commandRunner = runProces
   return { patch: diff.stdout, paths };
 }
 
+export async function captureIndexDiff(root, commandRunner = runProcess) {
+  const untracked = await commandRunner("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: root });
+  const untrackedPaths = splitNul(untracked.stdout).map(assertSafeRelativePath);
+  if (untrackedPaths.length) await commandRunner("git", ["add", "-N", "--", ...untrackedPaths], { cwd: root });
+  const [diff, names] = await Promise.all([
+    commandRunner("git", ["diff", "--binary", "--no-ext-diff", "--"], { cwd: root }),
+    commandRunner("git", ["diff", "--name-only", "-z", "--"], { cwd: root }),
+  ]);
+  const paths = splitNul(names.stdout).map(assertSafeRelativePath);
+  assertLocal(diff.stdout.length > 0 && paths.length > 0, "PATCH_EMPTY", "Implementation produced no Git-visible changes");
+  assertLocal(new Set(paths).size === paths.length, "PATCH_PATH", "Changed path list contains duplicates");
+  return { patch: diff.stdout, paths };
+}
+
 export function assertPlanPaths(paths, changeName) {
   const prefix = `openspec/changes/${changeName}/`;
   assertLocal(paths.every((filePath) => filePath.startsWith(prefix)), "PLAN_SCOPE", "Planning changed a path outside its deterministic OpenSpec change directory");
@@ -57,7 +72,7 @@ export function assertPlanPaths(paths, changeName) {
 
 export function assertImplementationPaths(paths, changeName) {
   const prefix = `openspec/changes/${changeName}/`;
-  assertLocal(paths.some((filePath) => filePath.startsWith(prefix)), "IMPLEMENTATION_SCOPE", "Combined changes do not include the accepted OpenSpec plan");
+  assertLocal(paths.includes(`${prefix}tasks.md`), "IMPLEMENTATION_SCOPE", "Implementation did not update the accepted OpenSpec task markers");
   for (const filePath of paths) {
     const protectedPath = PROTECTED_PATHS.find((candidate) => candidate.endsWith("/") ? filePath.startsWith(candidate) : filePath === candidate);
     assertLocal(!protectedPath, "IMPLEMENTATION_AUTHORITY", `Implementation attempted to modify protected authority path: ${filePath}`);
@@ -106,7 +121,7 @@ export async function validatePlan({ root, changeName, paths, commandRunner = ru
 }
 
 export function verificationCommandsForPaths(paths) {
-  const commands = [{ name: "git diff --check", command: "git", args: ["diff", "--check", "HEAD", "--"] }];
+  const commands = [{ name: "git diff --check", command: "git", args: ["diff", "--check", "--"] }];
   const nonPlan = paths.filter((filePath) => !filePath.startsWith("openspec/changes/"));
   const known = nonPlan.every((filePath) => [
     "apps/", "automation/", "bin/", "css/", "docs/", "infra/", "js/", "packages/", "tests/",
@@ -148,9 +163,11 @@ function validationEnvironment(dependencyRoot) {
   return env;
 }
 
-export async function validateImplementation({ root, dependencyRoot, changeName, paths, baseSha, taskHash, commandRunner = runProcess }) {
+export async function validateImplementation({ root, dependencyRoot, changeName, paths, approvedPlanHash, commandRunner = runProcess }) {
   assertImplementationPaths(paths, changeName);
-  await assertRunIdentity({ root, baseSha, taskHash, commandRunner });
+  assertLocal(/^[a-f0-9]{64}$/i.test(approvedPlanHash || ""), "PLAN_IDENTITY", "Approved plan digest is invalid");
+  const currentPlan = await hashApprovedPlan(root, changeName);
+  assertLocal(currentPlan.hash === approvedPlanHash, "PLAN_CHANGED", "Implementation changed the human-approved OpenSpec contract");
   const tasksPath = path.join(root, "openspec", "changes", changeName, "tasks.md");
   assertTaskMarkersComplete(await readFile(tasksPath, "utf8"));
   await commandRunner("openspec", ["validate", changeName, "--strict"], { cwd: root });
@@ -173,6 +190,18 @@ export async function assertOriginalCheckoutUnchanged({ root, baseSha, commandRu
 
 export async function applyValidatedPatch({ root, baseSha, patch, commandRunner = runProcess }) {
   await assertOriginalCheckoutUnchanged({ root, baseSha, commandRunner });
+  await commandRunner("git", ["apply", "--check", "--binary", "-"], { cwd: root, stdin: patch });
+  await commandRunner("git", ["apply", "--binary", "-"], { cwd: root, stdin: patch });
+  const [head, staged] = await Promise.all([
+    commandRunner("git", ["rev-parse", "HEAD"], { cwd: root }),
+    commandRunner("git", ["diff", "--cached", "--name-only"], { cwd: root }),
+  ]);
+  assertLocal(head.stdout.trim() === baseSha, "APPLY_COMMIT", "Local runner must not create commits");
+  assertLocal(staged.stdout.trim() === "", "APPLY_STAGED", "Local runner must leave changes unstaged");
+}
+
+export async function applyImplementationPatch({ root, changeName, baseSha, statusSnapshot, approvedPlanHash, patch, commandRunner = runProcess }) {
+  await assertApprovedCheckoutUnchanged({ root, changeName, baseSha, statusSnapshot, approvedPlanHash, commandRunner });
   await commandRunner("git", ["apply", "--check", "--binary", "-"], { cwd: root, stdin: patch });
   await commandRunner("git", ["apply", "--binary", "-"], { cwd: root, stdin: patch });
   const [head, staged] = await Promise.all([

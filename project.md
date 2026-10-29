@@ -250,13 +250,17 @@ The repository's only AI OpenSpec delivery process is the local runner documente
 in `docs/ai-local-openspec.md`. A developer supplies one committed Markdown task
 to `npm run ai:local -- --task <path>` or reads a GitHub Project `Todo` inbox
 locally with `--project-owner <login> --project-number <number>` and explicitly
-selects one issue. Separate non-interactive Codex processes
-create and apply a deterministic OpenSpec change inside an isolated temporary
-worktree. Trusted validation checks the plan, protected authority paths, task
-completion, changed areas, and base commit before applying an unstaged binary
-patch to the original checkout.
+selects one issue. Intake runs one non-interactive Codex process in an isolated
+worktree, strictly validates the deterministic OpenSpec plan, saves only those
+artifacts unstaged, and stops for human review. A later explicit
+`npm run ai:local -- --apply <change-name>` approval runs implementation in a
+fresh process and worktree. Trusted validation protects the approved contract,
+authority paths, task completion, changed areas, and checkout identity before
+applying an unstaged implementation delta.
 
-GitHub Project intake is read-only and credentials are never passed to Codex.
-Local delivery never changes Project or issue state, creates a branch or pull
-request, commits, pushes, or merges. Human review of the local diff remains
-mandatory.
+GitHub credentials are never passed to Codex. After a GitHub-backed apply, the
+host runner may move only the selected Project item to `Done` after validated
+local patch application or `Blocked` after a structured task blocker; technical
+failures leave it in the source status. Local delivery never edits issues,
+creates a branch or pull request, commits, pushes, or merges. Human review of
+both the plan and local implementation diff remains mandatory.

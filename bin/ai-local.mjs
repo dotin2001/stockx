@@ -21,16 +21,19 @@ export async function main(args = process.argv.slice(2), options = {}) {
     process.once("SIGINT", abort);
     process.once("SIGTERM", abort);
     try {
-      await runLocalWorkflow({
+      const result = await runLocalWorkflow({
         cwd: options.cwd || process.cwd(),
+        mode: parsed.mode,
         taskPath: parsed.taskPath,
         project: parsed.project,
+        changeName: parsed.changeName,
         dryRun: parsed.dryRun,
         io,
         signal: controller.signal,
         prompt: options.prompt,
         dependencies: options.dependencies,
       });
+      if (result.outcome === "blocked") return 2;
     } finally {
       process.off("SIGINT", abort);
       process.off("SIGTERM", abort);

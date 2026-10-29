@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("local runner permits narrow GitHub reads but no mutation, publication, or unsafe Codex authority", async () => {
+test("local runner permits one narrow Project status mutation but no publication or unsafe Codex authority", async () => {
   const [entry, runner, codex, processSource, githubSource] = await Promise.all([
     readFile("bin/ai-local.mjs", "utf8"),
     readFile("automation/ai-local/lib/runner.mjs", "utf8"),
@@ -13,8 +13,10 @@ test("local runner permits narrow GitHub reads but no mutation, publication, or 
   const executable = `${entry}\n${runner}\n${codex}\n${githubSource}`;
   assert.match(githubSource, /"project", "view"/);
   assert.match(githubSource, /"api", "graphql"/);
+  assert.match(githubSource, /"project", "item-edit"/);
+  assert.match(githubSource, /--single-select-option-id/);
   assert.doesNotMatch(executable, /gh\s+pr|githubRest|graphqlRequest|AI_PROJECT_TOKEN|GITHUB_TOKEN|git", \["(?:commit|push)/);
-  assert.doesNotMatch(githubSource, /"project",\s*"(?:item-(?:edit|delete|create)|close|copy|edit|delete)"/);
+  assert.doesNotMatch(githubSource, /"project",\s*"(?:item-(?:delete|create)|close|copy|edit|delete)"/);
   assert.doesNotMatch(githubSource, /"issue",\s*"(?:edit|comment|close|reopen|delete|create)"/);
   assert.doesNotMatch(githubSource, /"pr",\s*"(?:create|merge|review|close|edit)"/);
   assert.doesNotMatch(githubSource, /"workflow",\s*"run"|\.github\/workflows/);
@@ -45,4 +47,20 @@ test("package scripts expose the local runner as the only AI delivery command", 
   assert.ok(pkg.scripts.test.includes("tests/ai-local/*.test.mjs"));
   assert.ok(!pkg.scripts.test.includes("tests/ai-workflow"));
   assert.equal(pkg.bin["ai-local"], "./bin/ai-local.mjs");
+});
+
+test("operator documentation matches the two-stage CLI contract", async () => {
+  const [cli, guide, agents] = await Promise.all([
+    readFile("automation/ai-local/lib/cli.mjs", "utf8"),
+    readFile("docs/ai-local-openspec.md", "utf8"),
+    readFile("AGENTS.md", "utf8"),
+  ]);
+  for (const command of ["--apply <change-name>", "--sync-status <change-name>"]) {
+    assert.match(cli, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(guide, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(agents, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(guide, /Implementation did not run|does not run implementation/i);
+  assert.match(guide, /technical failures leave/i);
+  assert.doesNotMatch(guide, /Project mode is read-only|operator updates Project status manually/i);
 });

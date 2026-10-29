@@ -10,7 +10,7 @@ function validateResult(value, expectedPhase) {
   assertLocal(keys.length === EXACT_KEYS.length && keys.every((key, index) => key === [...EXACT_KEYS].sort()[index]), "RESULT_AUTHORITY", "Agent result contains missing or unexpected fields");
   assertLocal(value.version === 1, "RESULT_VERSION", "Agent result version is unsupported");
   assertLocal(value.phase === expectedPhase, "RESULT_PHASE", `Agent result phase must be ${expectedPhase}`);
-  const outcomes = expectedPhase === "plan" ? ["success", "clarification", "failure"] : ["success", "failure"];
+  const outcomes = expectedPhase === "plan" ? ["success", "clarification", "failure"] : ["success", "blocked", "failure"];
   assertLocal(outcomes.includes(value.outcome), "RESULT_OUTCOME", `Invalid ${expectedPhase} outcome`);
   assertLocal(typeof value.summary === "string" && value.summary.trim().length > 0 && value.summary.length <= 2000, "RESULT_SUMMARY", "Agent result summary is invalid");
   assertLocal(Array.isArray(value.verification) && value.verification.length <= 20, "RESULT_VERIFICATION", "Agent result verification must be an array");
