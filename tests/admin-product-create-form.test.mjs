@@ -15,7 +15,7 @@ test("admin product route source includes guest, non-admin, and admin form state
   assert.match(formSource, /Product creation is admin-only/);
   assert.match(formSource, /Category/);
   assert.match(formSource, /Product name/);
-  assert.match(formSource, /Price in USD/);
+  assert.match(formSource, /Store fallback price USD/);
   assert.match(formSource, /Initial size/);
   assert.match(formSource, /Image URL/);
 });
@@ -61,10 +61,11 @@ test("admin product management includes catalog and variant actions", () => {
 test("admin product management gates inventory controls to supreme admins", () => {
   assert.match(productManagementSource, /user\.is_supreme_admin/);
   assert.match(productManagementSource, /Supreme admin required/);
-  assert.match(productManagementSource, /api\.adjustAdminListingQuantity/);
-  assert.match(productManagementSource, /api\.updateAdminListingStatus/);
-  assert.match(productManagementSource, /Set Status/);
-  assert.match(productManagementSource, /currently available/);
+  assert.match(productManagementSource, /api\.createAdminProductListing/);
+  assert.match(productManagementSource, /api\.updateAdminListingInventory/);
+  assert.match(productManagementSource, /Create Stock/);
+  assert.match(productManagementSource, /Save Stock/);
+  assert.match(productManagementSource, /available/);
 });
 
 test("supreme admin navigation and user management are gated by is_supreme_admin", () => {
