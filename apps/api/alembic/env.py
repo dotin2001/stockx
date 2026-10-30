@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import os
 from pathlib import Path
 import sys
 
@@ -14,7 +15,7 @@ from app.db.base import Base
 from app import models  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", os.getenv("ALEMBIC_DATABASE_URL", settings.database_url))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -52,4 +53,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

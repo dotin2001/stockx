@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -59,6 +59,16 @@ class ProductVariant(TimestampMixin, Base):
     size: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     color: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sku: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    __table_args__ = (
+        CheckConstraint("sku IS NULL OR (sku = trim(sku) AND trim(sku) <> '')", name="sku_canonical"),
+        Index(
+            "uq_product_variants_sku_normalized",
+            func.lower(func.trim(sku)),
+            unique=True,
+            postgresql_where=sku.is_not(None),
+            sqlite_where=sku.is_not(None),
+        ),
+    )
 
     product = relationship("Product", back_populates="variants")
     listings = relationship("Listing", back_populates="product_variant")

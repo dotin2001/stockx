@@ -6,6 +6,7 @@ const SECRET_ENV_KEYS = [
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "OPENAI_API_KEY",
+  "TEST_POSTGRES_DATABASE_URL",
 ];
 
 export class LocalRunError extends Error {

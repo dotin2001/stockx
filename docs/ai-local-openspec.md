@@ -37,6 +37,52 @@ The runner uses the repository-pinned `gpt-5.6-sol` model. Invocation-scoped
 `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` values are passed only to Codex and are
 never read, printed, or recorded.
 
+### PostgreSQL verification during apply
+
+Apply can use an explicitly selected PostgreSQL database for implementation and
+trusted backend verification. Set `TEST_POSTGRES_DATABASE_URL` before the apply
+preflight or apply command:
+
+```bash
+export TEST_POSTGRES_DATABASE_URL='postgresql+psycopg://stockx:stockx@localhost:5432/stockx'
+(
+  cd apps/api
+  ALEMBIC_DATABASE_URL="$TEST_POSTGRES_DATABASE_URL" alembic upgrade head
+)
+npm run ai:local -- --apply <change-name> --dry-run
+npm run ai:local -- --apply <change-name>
+```
+
+The normal application `DATABASE_URL` is never inferred. If both variables
+should intentionally use the same disposable local database, set that choice
+explicitly:
+
+```bash
+export DATABASE_URL='postgresql+psycopg://stockx:stockx@localhost:5432/stockx'
+export TEST_POSTGRES_DATABASE_URL="$DATABASE_URL"
+```
+
+The runner validates the URL as PostgreSQL during apply preflight. It passes the
+value only to the approved implementation Codex process and trusted
+implementation verification; plan runs, status synchronization, GitHub
+commands, and unrelated children do not receive it. The value is not printed or
+stored in run records, and exact occurrences in child failures are redacted.
+
+Use only a disposable database that is not concurrently serving work that must
+remain stable. PostgreSQL identity, migration-lifecycle, and concurrency tests
+create isolated records, but migration tests can downgrade and re-upgrade the
+entire schema. An interrupted test can leave the database at an intermediate
+revision. Starting from a stale revision can also make concurrency tests fail
+before the migration-lifecycle tests run, so apply `alembic upgrade head` before
+each apply attempt as shown above. Do not point this variable at shared,
+production, or irreplaceable data. After an interruption, restore the configured
+database to the current revision before retrying:
+
+```bash
+cd apps/api
+ALEMBIC_DATABASE_URL="$TEST_POSTGRES_DATABASE_URL" alembic upgrade head
+```
+
 GitHub Project intake and terminal status updates require the local GitHub CLI
 session to have Project access:
 

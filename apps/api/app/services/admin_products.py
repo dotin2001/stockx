@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.errors import APIError
+from app.core.identity import normalize_sku
 from app.models import Category, Listing, Product, ProductVariant, User
 from app.schemas.product import (
     AdminProductInventoryItem,
@@ -30,10 +31,29 @@ PRODUCT_LOAD_OPTIONS = (
     selectinload(Product.listings).selectinload(Listing.product_variant),
 )
 PRODUCT_SLUG_TARGETS = ("uq_products_slug", "ix_products_slug", "products.slug")
+SKU_UNIQUENESS_TARGETS = (
+    "uq_product_variants_sku_normalized",
+    "product_variants.sku",
+)
 
 
 def _product_slug_conflict() -> APIError:
     return APIError(status.HTTP_409_CONFLICT, "product_slug_exists", "A product already exists with this slug.")
+
+
+def _sku_conflict() -> APIError:
+    return APIError(status.HTTP_409_CONFLICT, "variant_sku_exists", "A product variant already uses this SKU.")
+
+
+def _ensure_unique_sku(db: Session, sku: str | None, *, excluding_variant_id: UUID | None = None) -> None:
+    normalized = normalize_sku(sku)
+    if normalized is None:
+        return
+    query = select(ProductVariant.id).where(func.lower(func.trim(ProductVariant.sku)) == normalized.lower())
+    if excluding_variant_id is not None:
+        query = query.where(ProductVariant.id != excluding_variant_id)
+    if db.scalar(query) is not None:
+        raise _sku_conflict()
 
 
 def _load_product(db: Session, product_id: UUID) -> Product | None:
@@ -200,9 +220,18 @@ def create_variant(db: Session, *, product_id: UUID, payload: ProductVariantCrea
     product = _load_product(db, product_id)
     if product is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "product_not_found", "Product was not found.")
-    variant = ProductVariant(product_id=product.id, **payload.model_dump())
+    values = payload.model_dump()
+    values["sku"] = normalize_sku(values.get("sku"))
+    _ensure_unique_sku(db, values["sku"])
+    variant = ProductVariant(product_id=product.id, **values)
     db.add(variant)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if matches_integrity_target(exc, SKU_UNIQUENESS_TARGETS):
+            raise _sku_conflict() from exc
+        raise
     return variant
 
 
@@ -210,9 +239,19 @@ def update_variant(db: Session, *, variant_id: UUID, payload: ProductVariantUpda
     variant = db.get(ProductVariant, variant_id)
     if variant is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "variant_not_found", "Product variant was not found.")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    values = payload.model_dump(exclude_unset=True)
+    if "sku" in values:
+        values["sku"] = normalize_sku(values["sku"])
+        _ensure_unique_sku(db, values["sku"], excluding_variant_id=variant.id)
+    for field, value in values.items():
         setattr(variant, field, value)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if matches_integrity_target(exc, SKU_UNIQUENESS_TARGETS):
+            raise _sku_conflict() from exc
+        raise
     return variant
 
 

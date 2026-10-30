@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { resolveApplyTestEnvironment } from "./apply-environment.mjs";
 import { assertLocal, LocalRunError } from "./errors.mjs";
 import { hashApprovedPlan, inspectApprovedPlanCheckout } from "./approved-plan.mjs";
 import { loadGitHubProjectTask } from "./github-project.mjs";
@@ -130,6 +131,7 @@ export async function preflight({
 export async function preflightApply({ cwd = process.cwd(), changeName, commandRunner = runProcess, env = process.env }) {
   try {
     const root = await discoverRepository(cwd, commandRunner);
+    const applyTestEnvironment = resolveApplyTestEnvironment(env);
     const planRecord = await findSuccessfulPlanRecord(root, changeName);
     const repository = await inspectApprovedPlanCheckout(root, changeName, commandRunner);
     const stale = await findOwnedStaleWorktrees(root);
@@ -138,7 +140,7 @@ export async function preflightApply({ cwd = process.cwd(), changeName, commandR
     const approvedPlan = await hashApprovedPlan(root, changeName);
     await validatePlan({ root, changeName, paths: approvedPlan.paths, commandRunner });
     const tools = await inspectTools(root, commandRunner, env);
-    return { root, planRecord, approvedPlan, ...repository, tools };
+    return { root, planRecord, approvedPlan, applyTestEnvironment, ...repository, tools };
   } catch (error) {
     if (error instanceof LocalRunError) throw error;
     throw new LocalRunError("APPLY_PREFLIGHT", `Apply preflight failed: ${error?.message || error}`);

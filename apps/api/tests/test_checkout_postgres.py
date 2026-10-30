@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import APIError
@@ -15,10 +14,7 @@ from app.payments import FakeCheckoutSessionProvider
 from app.schemas.order import OrderCreateRequest, PaymentSessionCreateRequest
 from app.services import checkout, orders, payment_checkout
 from app.services import stripe_webhooks
-
-
-POSTGRES_URL = os.getenv("TEST_POSTGRES_DATABASE_URL")
-pytestmark = pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_DATABASE_URL is not configured")
+from tests.postgres_support import create_postgres_test_engine
 
 
 def shipping_payload(token: str) -> OrderCreateRequest:
@@ -39,8 +35,7 @@ def shipping_payload(token: str) -> OrderCreateRequest:
 
 @pytest.fixture()
 def postgres_checkout_data():
-    assert POSTGRES_URL is not None
-    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    engine = create_postgres_test_engine()
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     suffix = uuid4().hex
     with SessionLocal() as db:

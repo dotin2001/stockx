@@ -3,12 +3,13 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
+import { resolveApplyTestEnvironment, TEST_POSTGRES_DATABASE_URL } from "../../automation/ai-local/lib/apply-environment.mjs";
 import { CODEX_MODEL, codexArguments } from "../../automation/ai-local/lib/codex.mjs";
 import { parseCliArgs } from "../../automation/ai-local/lib/cli.mjs";
 import { parseAgentResult } from "../../automation/ai-local/lib/contracts.mjs";
 import { LocalRunError, sanitizeText } from "../../automation/ai-local/lib/errors.mjs";
 import { githubEnvironment } from "../../automation/ai-local/lib/github-project.mjs";
-import { inspectRepository, inspectTools, preflight } from "../../automation/ai-local/lib/preflight.mjs";
+import { inspectRepository, inspectTools, preflight, preflightApply } from "../../automation/ai-local/lib/preflight.mjs";
 import { runProcess, sanitizedChildEnvironment } from "../../automation/ai-local/lib/process.mjs";
 import { createRunId, findPendingStatusRecord, findSuccessfulPlanRecord, initialRunRecord, updateRunRecord, writeRunRecord } from "../../automation/ai-local/lib/run-record.mjs";
 import { createGitHubIssueTask, resolveTaskFile, slugifyTitle } from "../../automation/ai-local/lib/task.mjs";
@@ -108,10 +109,43 @@ test("sanitizer and child environment redact secrets and omit GitHub credentials
   assert.equal(ghEnv.CODEX_API_KEY, undefined);
 });
 
+test("apply test environment accepts only explicit PostgreSQL SQLAlchemy URLs", async () => {
+  const plain = "postgresql://stockx:stockx@localhost:5432/stockx";
+  const driverQualified = "postgresql+psycopg://stockx:stockx@localhost:5432/stockx";
+  assert.deepEqual(resolveApplyTestEnvironment({}), {});
+  assert.deepEqual(resolveApplyTestEnvironment({ [TEST_POSTGRES_DATABASE_URL]: plain }), { [TEST_POSTGRES_DATABASE_URL]: plain });
+  const resolved = resolveApplyTestEnvironment({ [TEST_POSTGRES_DATABASE_URL]: driverQualified, DATABASE_URL: "must-not-pass" });
+  assert.deepEqual(resolved, { [TEST_POSTGRES_DATABASE_URL]: driverQualified });
+  assert.ok(Object.isFrozen(resolved));
+
+  for (const invalid of ["", " ", "not-a-url", "sqlite+pysqlite:///:memory:", "mysql://localhost/test"]) {
+    assert.throws(
+      () => resolveApplyTestEnvironment({ [TEST_POSTGRES_DATABASE_URL]: invalid }),
+      (error) => error.code === "TEST_POSTGRES_DATABASE_URL",
+    );
+  }
+
+  const root = await initRepository();
+  await assert.rejects(
+    () => preflightApply({ cwd: root, changeName: "local-a", env: { [TEST_POSTGRES_DATABASE_URL]: "sqlite:///secret-value" } }),
+    (error) => error.code === "TEST_POSTGRES_DATABASE_URL" && !error.message.includes("secret-value"),
+  );
+});
+
 test("process execution reports non-zero exits, signals, and missing commands", async () => {
   await assert.rejects(() => runProcess(process.execPath, ["-e", "process.exit(7)"]), (error) => error.code === "COMMAND_FAILED");
   await assert.rejects(() => runProcess(process.execPath, ["-e", "process.kill(process.pid, 'SIGTERM')"]), (error) => error.code === "COMMAND_SIGNAL");
   await assert.rejects(() => runProcess("definitely-not-an-ai-local-command", []), (error) => error.code === "COMMAND_START");
+});
+
+test("process failures redact the apply test database URL", async () => {
+  const testUrl = "postgresql+psycopg://sentinel-user:sentinel-password@localhost:5432/stockx";
+  await assert.rejects(
+    () => runProcess(process.execPath, ["-e", "process.stderr.write(process.env.TEST_POSTGRES_DATABASE_URL); process.exit(9)"], {
+      env: { [TEST_POSTGRES_DATABASE_URL]: testUrl },
+    }),
+    (error) => error.code === "COMMAND_FAILED" && !error.message.includes(testUrl) && !error.message.includes("sentinel-password"),
+  );
 });
 
 test("agent result contracts reject malformed, extra, and phase-inconsistent output", () => {

@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
 
@@ -196,18 +196,26 @@ def adjust_managed_listing_quantity(
     if adjustment == 0:
         raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_quantity_adjustment", "Quantity adjustment must be non-zero.")
 
-    listing = _load_managed_listing(db, listing_id)
-    next_quantity = listing.available_quantity + adjustment
-    if next_quantity < 0:
+    result = db.execute(
+        update(Listing)
+        .where(
+            Listing.id == listing_id,
+            Listing.available_quantity + adjustment >= 0,
+        )
+        .values(available_quantity=Listing.available_quantity + adjustment)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 0:
+        exists = db.scalar(select(Listing.id).where(Listing.id == listing_id))
+        if exists is None:
+            raise APIError(status.HTTP_404_NOT_FOUND, "listing_not_found", "Listing was not found.")
         raise APIError(
             status.HTTP_409_CONFLICT,
             "inventory_quantity_below_zero",
             "Inventory quantity cannot be reduced below zero.",
         )
-
-    listing.available_quantity = next_quantity
     db.flush()
-    return _load_managed_listing(db, listing.id)
+    return _load_managed_listing(db, listing_id)
 
 
 def change_managed_listing_status(

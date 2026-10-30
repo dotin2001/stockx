@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.identity import normalize_sku
 from app.schemas.category import CategoryRead
 
 
@@ -184,15 +185,25 @@ class ProductVariantCreate(BaseModel):
     color: str | None = Field(default=None, max_length=128)
     sku: str | None = Field(default=None, max_length=128)
 
+    @field_validator("sku", mode="before")
+    @classmethod
+    def normalize_sku_value(cls, value: str | None) -> str | None:
+        return normalize_sku(value)
+
 
 class ProductVariantUpdate(BaseModel):
     size: str | None = Field(default=None, max_length=64)
     color: str | None = Field(default=None, max_length=128)
     sku: str | None = Field(default=None, max_length=128)
 
+    @field_validator("sku", mode="before")
+    @classmethod
+    def normalize_sku_value(cls, value: str | None) -> str | None:
+        return normalize_sku(value)
+
     @model_validator(mode="after")
     def require_update(self) -> "ProductVariantUpdate":
-        if self.size is None and self.color is None and self.sku is None:
+        if not self.model_fields_set:
             raise ValueError("At least one variant field must be provided.")
         return self
 

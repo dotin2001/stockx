@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 
+from app.core.identity import normalize_email
 from app.schemas.user import UserPublic
 
 
@@ -10,8 +11,8 @@ class RegisterRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
-    def normalize_email(cls, value: str) -> str:
-        value = value.strip().lower()
+    def normalize_email_value(cls, value: str) -> str:
+        value = normalize_email(value)
         if "@" not in value:
             raise ValueError("Email must be valid.")
         return value
@@ -23,12 +24,11 @@ class LoginRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
-    def normalize_email(cls, value: str) -> str:
-        return value.strip().lower()
+    def normalize_email_value(cls, value: str) -> str:
+        return normalize_email(value)
 
 
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserPublic
-

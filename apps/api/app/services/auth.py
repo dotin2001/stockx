@@ -6,16 +6,26 @@ from uuid import UUID
 
 from fastapi import Response, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.errors import APIError
 from app.core.config import settings
+from app.core.identity import normalize_email
 from app.core.security import create_access_token, hash_password, hash_refresh_token, verify_password
 from app.models import RefreshToken, User
+from app.services.integrity import matches_integrity_target
 
 
-def normalize_email(email: str) -> str:
-    return email.strip().lower()
+EMAIL_UNIQUENESS_TARGETS = (
+    "uq_users_email_normalized",
+    "uq_users_email",
+    "users.email",
+)
+
+
+def _email_conflict() -> APIError:
+    return APIError(status.HTTP_409_CONFLICT, "email_exists", "An account already exists for this email.")
 
 
 def get_user_by_email(db: Session, email: str) -> User | None:
@@ -23,12 +33,19 @@ def get_user_by_email(db: Session, email: str) -> User | None:
 
 
 def register_user(db: Session, *, name: str, email: str, password: str) -> User:
-    if get_user_by_email(db, email) is not None:
-        raise APIError(status.HTTP_409_CONFLICT, "email_exists", "An account already exists for this email.")
+    normalized_email = normalize_email(email)
+    if get_user_by_email(db, normalized_email) is not None:
+        raise _email_conflict()
 
-    user = User(name=name.strip(), email=normalize_email(email), password_hash=hash_password(password))
+    user = User(name=name.strip(), email=normalized_email, password_hash=hash_password(password))
     db.add(user)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if matches_integrity_target(exc, EMAIL_UNIQUENESS_TARGETS):
+            raise _email_conflict() from exc
+        raise
     return user
 
 

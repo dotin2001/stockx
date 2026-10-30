@@ -189,6 +189,7 @@ async function runApplyWorkflow(options) {
       worktree: ownedWorktree.worktree,
       phase: "implementation",
       changeName,
+      applyTestEnvironment: context.applyTestEnvironment,
       signal,
       onStderr: (text) => io.info(sanitizeText(text).trimEnd()),
     });
@@ -211,6 +212,7 @@ async function runApplyWorkflow(options) {
       changeName,
       paths: delta.paths,
       approvedPlanHash: context.approvedPlan.hash,
+      applyTestEnvironment: context.applyTestEnvironment,
     });
 
     io.phase("apply", "applying the validated implementation as unstaged changes");

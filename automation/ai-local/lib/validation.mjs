@@ -3,6 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 
+import { addApplyTestEnvironment } from "./apply-environment.mjs";
 import { assertLocal, LocalRunError } from "./errors.mjs";
 import { assertApprovedCheckoutUnchanged, hashApprovedPlan } from "./approved-plan.mjs";
 import { runProcess, sanitizedChildEnvironment } from "./process.mjs";
@@ -153,8 +154,9 @@ export async function assertRunIdentity({ root, baseSha, taskHash, commandRunner
   assertLocal(actualHash === taskHash, "TASK_IDENTITY", "Isolated task context no longer matches the recorded task hash");
 }
 
-function validationEnvironment(dependencyRoot) {
+function validationEnvironment(dependencyRoot, applyTestEnvironment) {
   const env = sanitizedChildEnvironment();
+  addApplyTestEnvironment(env, applyTestEnvironment);
   if (dependencyRoot) {
     const bin = path.join(dependencyRoot, "node_modules", ".bin");
     env.PATH = `${bin}${path.delimiter}${env.PATH || ""}`;
@@ -163,7 +165,7 @@ function validationEnvironment(dependencyRoot) {
   return env;
 }
 
-export async function validateImplementation({ root, dependencyRoot, changeName, paths, approvedPlanHash, commandRunner = runProcess }) {
+export async function validateImplementation({ root, dependencyRoot, changeName, paths, approvedPlanHash, applyTestEnvironment = {}, commandRunner = runProcess }) {
   assertImplementationPaths(paths, changeName);
   assertLocal(/^[a-f0-9]{64}$/i.test(approvedPlanHash || ""), "PLAN_IDENTITY", "Approved plan digest is invalid");
   const currentPlan = await hashApprovedPlan(root, changeName);
@@ -175,7 +177,7 @@ export async function validateImplementation({ root, dependencyRoot, changeName,
   for (const check of checks) {
     await commandRunner(check.command, check.args, {
       cwd: path.join(root, check.cwd || "."),
-      env: validationEnvironment(dependencyRoot),
+      env: validationEnvironment(dependencyRoot, applyTestEnvironment),
     });
   }
   return checks.map((check) => check.name);

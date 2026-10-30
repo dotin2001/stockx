@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, String, text
+from sqlalchemy import Boolean, CheckConstraint, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -27,6 +27,10 @@ class User(TimestampMixin, Base):
         nullable=False,
         default=False,
         server_default=text("false"),
+    )
+    __table_args__ = (
+        CheckConstraint("email = lower(trim(email)) AND trim(email) <> ''", name="email_canonical"),
+        Index("uq_users_email_normalized", func.lower(func.trim(email)), unique=True),
     )
 
     refresh_tokens = relationship(

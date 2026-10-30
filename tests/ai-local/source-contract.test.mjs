@@ -3,11 +3,12 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("local runner permits one narrow Project status mutation but no publication or unsafe Codex authority", async () => {
-  const [entry, runner, codex, processSource, githubSource] = await Promise.all([
+  const [entry, runner, codex, processSource, applyEnvironment, githubSource] = await Promise.all([
     readFile("bin/ai-local.mjs", "utf8"),
     readFile("automation/ai-local/lib/runner.mjs", "utf8"),
     readFile("automation/ai-local/lib/codex.mjs", "utf8"),
     readFile("automation/ai-local/lib/process.mjs", "utf8"),
+    readFile("automation/ai-local/lib/apply-environment.mjs", "utf8"),
     readFile("automation/ai-local/lib/github-project.mjs", "utf8"),
   ]);
   const executable = `${entry}\n${runner}\n${codex}\n${githubSource}`;
@@ -26,7 +27,9 @@ test("local runner permits one narrow Project status mutation but no publication
   assert.match(codex, /--model/);
   assert.match(codex, /CODEX_MODEL = "gpt-5\.6-sol"/);
   assert.match(processSource, /CODEX_API_KEY/);
-  assert.doesNotMatch(processSource.match(/const PASSTHROUGH_ENV = \[[\s\S]*?\];/)?.[0] || "", /GITHUB_TOKEN|AI_PROJECT_TOKEN|OPENAI_API_KEY/);
+  assert.doesNotMatch(processSource.match(/const PASSTHROUGH_ENV = \[[\s\S]*?\];/)?.[0] || "", /GITHUB_TOKEN|AI_PROJECT_TOKEN|OPENAI_API_KEY|TEST_POSTGRES_DATABASE_URL/);
+  assert.match(applyEnvironment, /TEST_POSTGRES_DATABASE_URL/);
+  assert.match(applyEnvironment, /postgresql/);
   assert.doesNotMatch(githubSource.match(/const GITHUB_ENV_KEYS = \[[\s\S]*?\];/)?.[0] || "", /GITHUB_TOKEN|GH_TOKEN|AI_PROJECT_TOKEN|CODEX_API_KEY|CODEX_ACCESS_TOKEN/);
 });
 

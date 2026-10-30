@@ -137,6 +137,67 @@ test("explicit apply runs implementation without proposal generation", async () 
   assert.doesNotMatch(setup.calls.join(" "), /plan$/);
 });
 
+test("apply passes the PostgreSQL test environment only to implementation and validation without persisting it", async () => {
+  const setup = await commonHarness();
+  const testUrl = "postgresql+psycopg://sentinel-user:sentinel-password@localhost:5432/stockx";
+  const applyTestEnvironment = Object.freeze({ TEST_POSTGRES_DATABASE_URL: testUrl });
+  const received = {};
+  const baseDependencies = applyDependencies(setup);
+  const dependencies = {
+    ...baseDependencies,
+    preflightApply: async () => ({
+      root: setup.root,
+      planRecord: planRecord(),
+      approvedPlan: { hash: planHash, paths: planPaths },
+      applyTestEnvironment,
+      baseSha,
+      branch: "main",
+      tools: tools(),
+      planDirty: false,
+      statusSnapshot: "",
+    }),
+    runStage: async (options) => {
+      setup.calls.push(options.phase);
+      received.stage = options.applyTestEnvironment;
+      return { version: 1, phase: options.phase, outcome: "success", summary: "implemented", verification: [] };
+    },
+    validateImplementation: async (options) => {
+      setup.calls.push("validate-implementation");
+      received.validation = options.applyTestEnvironment;
+      return ["git diff --check"];
+    },
+  };
+
+  await runLocalWorkflow({ mode: "apply", changeName: "local-pilot", cwd: setup.root, io: memoryIo().io, dependencies });
+  assert.equal(received.stage, applyTestEnvironment);
+  assert.equal(received.validation, applyTestEnvironment);
+  assert.doesNotMatch(JSON.stringify(setup.records), /sentinel-user|sentinel-password|TEST_POSTGRES_DATABASE_URL/);
+});
+
+test("apply dry run validates context without exposing the PostgreSQL test environment to a child", async () => {
+  const setup = await commonHarness();
+  const testUrl = "postgresql+psycopg://sentinel-user:sentinel-password@localhost:5432/stockx";
+  const dependencies = applyDependencies(setup, {
+    preflightApply: async () => ({
+      root: setup.root,
+      planRecord: planRecord(),
+      approvedPlan: { hash: planHash, paths: planPaths },
+      applyTestEnvironment: Object.freeze({ TEST_POSTGRES_DATABASE_URL: testUrl }),
+      baseSha,
+      branch: "main",
+      tools: tools(),
+      planDirty: false,
+      statusSnapshot: "",
+    }),
+    runStage: async () => { throw new Error("dry run must not start Codex"); },
+    validateImplementation: async () => { throw new Error("dry run must not start verification"); },
+  });
+  const result = await runLocalWorkflow({ mode: "apply", changeName: "local-pilot", cwd: setup.root, dryRun: true, io: memoryIo().io, dependencies });
+  assert.equal(result.dryRun, true);
+  assert.deepEqual(setup.calls, []);
+  assert.doesNotMatch(JSON.stringify(setup.records), /sentinel-user|sentinel-password|TEST_POSTGRES_DATABASE_URL/);
+});
+
 test("GitHub apply maps success to Done and structured blocker to Blocked", async () => {
   const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
 
@@ -236,4 +297,50 @@ test("Codex stage uses trusted prompt/schema and parses fake executable output",
   assert.equal(invocation.options.env.GITHUB_TOKEN, undefined);
   assert.equal(invocation.options.env.GH_TOKEN, undefined);
   assert.match(invocation.options.env.GH_CONFIG_DIR, /\.ai-local\/no-github-auth$/);
+});
+
+test("Codex exposes and redacts the test database URL only during implementation", async () => {
+  const root = await tempDirectory();
+  const worktree = await tempDirectory();
+  const testUrl = "postgresql+psycopg://sentinel-user:sentinel-password@localhost:5432/stockx";
+  const applyTestEnvironment = Object.freeze({ TEST_POSTGRES_DATABASE_URL: testUrl });
+  await mkdir(path.join(root, "automation", "ai-local", "prompts"), { recursive: true });
+  await mkdir(path.join(root, "automation", "ai-local", "schemas"), { recursive: true });
+  for (const phase of ["plan", "implementation"]) {
+    await writeFile(path.join(root, "automation", "ai-local", "prompts", `${phase}.md`), `${phase} {{CHANGE_NAME}}`);
+    await writeFile(path.join(root, "automation", "ai-local", "schemas", `${phase}-result.schema.json`), "{}");
+  }
+
+  const environments = {};
+  let streamed = "";
+  const run = (phase) => runCodexStage({
+    root,
+    worktree,
+    phase,
+    changeName: "local-pilot",
+    applyTestEnvironment,
+    onStderr: (text) => { streamed += text; },
+    commandRunner: async (_command, args, options) => {
+      environments[phase] = options.env;
+      options.onStderr?.(`child echoed ${options.env.TEST_POSTGRES_DATABASE_URL || "no test URL"}`);
+      const resultPath = args[args.indexOf("--output-last-message") + 1];
+      await writeFile(resultPath, JSON.stringify({
+        version: 1,
+        phase,
+        outcome: "success",
+        summary: phase === "implementation" ? `completed ${testUrl}` : "completed plan",
+        verification: [phase === "implementation" ? `checked ${testUrl}` : "checked plan"],
+      }));
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  const planResult = await run("plan");
+  const implementationResult = await run("implementation");
+  assert.equal(environments.plan.TEST_POSTGRES_DATABASE_URL, undefined);
+  assert.equal(environments.implementation.TEST_POSTGRES_DATABASE_URL, testUrl);
+  assert.equal(planResult.summary, "completed plan");
+  assert.match(implementationResult.summary, /\[REDACTED\]/);
+  assert.match(implementationResult.verification[0], /\[REDACTED\]/);
+  assert.doesNotMatch(streamed, /sentinel-user|sentinel-password/);
 });

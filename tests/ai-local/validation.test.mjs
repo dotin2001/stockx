@@ -146,6 +146,24 @@ test("implementation validation protects authority, task truth, and verification
   assert.deepEqual(verification, ["git diff --check"]);
   assert.equal(calls[0].command, "openspec");
 
+  const testUrl = "postgresql+psycopg://sentinel-user:sentinel-password@localhost:5432/stockx";
+  const backendCalls = [];
+  const backendVerification = await validateImplementation({
+    root,
+    changeName,
+    paths: [`openspec/changes/${changeName}/tasks.md`, "apps/api/app/example.py"],
+    approvedPlanHash,
+    applyTestEnvironment: Object.freeze({ TEST_POSTGRES_DATABASE_URL: testUrl }),
+    commandRunner: async (command, args, options) => {
+      backendCalls.push({ command, args, options });
+      return { stdout: "", stderr: "" };
+    },
+  });
+  assert.deepEqual(backendVerification, ["git diff --check", "python -m pytest"]);
+  const pytestCall = backendCalls.find((call) => call.command === "python");
+  assert.equal(pytestCall.options.env.TEST_POSTGRES_DATABASE_URL, testUrl);
+  assert.equal(backendCalls.find((call) => call.command === "openspec").options.env, undefined);
+
   await writeFile(path.join(root, "openspec", "changes", changeName, "proposal.md"), "# Rewritten\n");
   await assert.rejects(() => validateImplementation({ root, changeName, paths: captured.paths, approvedPlanHash, commandRunner: async () => ({ stdout: "", stderr: "" }) }), /approved/);
 });
