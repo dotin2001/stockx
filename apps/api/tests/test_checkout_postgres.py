@@ -106,6 +106,7 @@ def test_two_customers_competing_for_final_unit(postgres_checkout_data) -> None:
     with SessionLocal() as db:
         listing = db.get(Listing, ids["listing"])
         assert listing is not None and listing.available_quantity == 0
+        assert db.get(Product, ids["product"]).lowest_ask_cents is None
         assert db.scalar(select(CartItem).where(CartItem.user_id == winner_id)) is None
         assert db.scalar(select(CartItem).where(CartItem.user_id == loser_id)) is not None
 
@@ -136,6 +137,7 @@ def test_concurrent_same_customer_retry_creates_one_order(postgres_checkout_data
         assert len(db.scalars(select(Order).where(Order.user_id == user_id)).all()) == 1
         listing = db.get(Listing, ids["listing"])
         assert listing is not None and listing.available_quantity == 0
+        assert db.get(Product, ids["product"]).lowest_ask_cents is None
 
 
 def test_two_customers_competing_for_final_stripe_reservation(postgres_checkout_data) -> None:
@@ -288,6 +290,7 @@ def test_paid_provider_state_wins_concurrent_customer_cancellation(postgres_chec
         assert order is not None and order.status == "confirmed" and order.payment_status == "paid"
         assert order.inventory_released_at is None
         assert listing is not None and listing.available_quantity == 0
+        assert db.get(Product, ids["product"]).lowest_ask_cents is None
 
 
 def test_concurrent_paid_and_expired_transitions_keep_inventory_consistent(postgres_checkout_data) -> None:
@@ -353,10 +356,12 @@ def test_concurrent_paid_and_expired_transitions_keep_inventory_consistent(postg
         if order.payment_status == "paid":
             assert order.status == "confirmed" and attempt.status == "paid"
             assert order.inventory_released_at is None and listing.available_quantity == 0
+            assert db.get(Product, ids["product"]).lowest_ask_cents is None
         else:
             assert order.status == "cancelled" and order.payment_status == "failed"
             assert attempt.status == "expired"
             assert order.inventory_released_at is not None and listing.available_quantity == 1
+            assert db.get(Product, ids["product"]).lowest_ask_cents == 12345
 
 
 def test_concurrent_duplicate_webhook_insert_is_deduplicated(postgres_checkout_data) -> None:

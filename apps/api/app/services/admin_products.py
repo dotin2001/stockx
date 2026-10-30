@@ -101,7 +101,9 @@ def list_managed_products(
 
 def serialize_admin_product(product: Product) -> AdminProductRead:
     active_available_listings = [
-        listing for listing in product.listings if listing.status == "active" and listing.available_quantity > 0
+        listing
+        for listing in product.listings
+        if listing.status == "active" and listing.available_quantity > 0 and listing.currency == "USD"
     ]
     inventory_items = [
         AdminProductInventoryItem(
@@ -146,9 +148,15 @@ def serialize_admin_product(product: Product) -> AdminProductRead:
         archived_by_user_id=product.archived_by_user_id,
         inventory_summary=AdminProductInventorySummary(
             total_listings=len(product.listings),
-            active_listings=sum(1 for listing in product.listings if listing.status == "active"),
+            active_listings=sum(
+                1
+                for listing in product.listings
+                if listing.status == "active" and listing.available_quantity > 0 and listing.currency == "USD"
+            ),
             total_available_quantity=sum(
-                listing.available_quantity for listing in product.listings if listing.status == "active"
+                listing.available_quantity
+                for listing in product.listings
+                if listing.status == "active" and listing.available_quantity > 0 and listing.currency == "USD"
             ),
             lowest_active_price_cents=lowest_active_listing.price_cents if lowest_active_listing else None,
         ),
@@ -159,7 +167,7 @@ def serialize_admin_product(product: Product) -> AdminProductRead:
 def create_product(db: Session, payload: ProductCreate) -> Product:
     _ensure_category(db, payload.category_id)
     _ensure_unique_slug(db, payload.slug)
-    product = Product(**payload.model_dump())
+    product = Product(**payload.model_dump(exclude={"lowest_ask_cents"}))
     db.add(product)
     try:
         db.flush()
@@ -176,7 +184,7 @@ def update_product(db: Session, *, product_id: UUID, payload: ProductUpdate) -> 
     if product is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "product_not_found", "Product was not found.")
 
-    values = payload.model_dump(exclude_unset=True)
+    values = payload.model_dump(exclude_unset=True, exclude={"lowest_ask_cents"})
     category_id = values.get("category_id")
     if category_id is not None:
         _ensure_category(db, category_id)

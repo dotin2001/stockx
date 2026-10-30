@@ -39,7 +39,6 @@ def db_session() -> Generator[Session, None, None]:
             brand="Jordan",
             description="A seeded sneaker for API tests.",
             image_url="https://example.test/jordan.png",
-            lowest_ask_cents=24300,
             total_sold=12,
         )
         variant = ProductVariant(product=product, size="10", color="Black", sku="J1-TEST-10")
@@ -50,7 +49,6 @@ def db_session() -> Generator[Session, None, None]:
             brand="Supreme",
             description="A seeded hoodie for API tests.",
             image_url="https://example.test/hoodie.png",
-            lowest_ask_cents=5700,
             total_sold=7,
         )
         session.add_all([sneakers, streetwear, product, variant, hoodie])
@@ -67,4 +65,3 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
-

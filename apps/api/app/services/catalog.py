@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import Select, and_, case, exists, func, or_, select
+from sqlalchemy import Select, case, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import Category, Listing, Product, ProductVariant
@@ -33,24 +33,12 @@ def list_categories(db: Session) -> list[Category]:
     return list(db.scalars(select(Category).order_by(Category.name)).all())
 
 
-def _lowest_active_listing_prices():
-    return (
-        select(
-            Listing.product_id.label("product_id"),
-            func.min(Listing.price_cents).label("lowest_active_price_cents"),
-        )
-        .where(Listing.status == "active", Listing.available_quantity > 0)
-        .group_by(Listing.product_id)
-        .subquery()
-    )
-
-
 def _active_available_listings(product: Product) -> list[Listing]:
     return sorted(
         [
             listing
             for listing in product.listings
-            if listing.status == "active" and listing.available_quantity > 0
+            if listing.status == "active" and listing.available_quantity > 0 and listing.currency == "USD"
         ],
         key=lambda item: (item.price_cents, item.created_at, str(item.id)),
     )
@@ -88,17 +76,6 @@ def _search_criterion(query: str):
     )
 
 
-def _active_listing_exists(*extra_criteria):
-    return exists(
-        select(1).where(
-            Listing.product_id == Product.id,
-            Listing.status == "active",
-            Listing.available_quantity > 0,
-            *extra_criteria,
-        )
-    )
-
-
 def _variant_size_exists(sizes: list[str]):
     return exists(
         select(1).where(
@@ -125,29 +102,27 @@ def _discovery_criteria(
     if include_size and query.sizes:
         criteria.append(_variant_size_exists(query.sizes))
     if query.available_only:
-        criteria.append(_active_listing_exists())
+        criteria.append(Product.lowest_ask_cents.is_not(None))
     if include_price and (query.min_price_cents is not None or query.max_price_cents is not None):
-        price_criteria = []
         if query.min_price_cents is not None:
-            price_criteria.append(Listing.price_cents >= query.min_price_cents)
+            criteria.append(Product.lowest_ask_cents >= query.min_price_cents)
         if query.max_price_cents is not None:
-            price_criteria.append(Listing.price_cents <= query.max_price_cents)
-        criteria.append(_active_listing_exists(*price_criteria))
+            criteria.append(Product.lowest_ask_cents <= query.max_price_cents)
     return criteria
 
 
-def _ordered_statement(statement: Select[tuple[Product]], query: ProductDiscoveryQuery, lowest_prices) -> Select[tuple[Product]]:
+def _ordered_statement(statement: Select[tuple[Product]], query: ProductDiscoveryQuery) -> Select[tuple[Product]]:
     if query.sort == ProductDiscoverySort.PRICE_ASC:
         return statement.order_by(
-            lowest_prices.c.lowest_active_price_cents.is_(None).asc(),
-            lowest_prices.c.lowest_active_price_cents.asc(),
+            Product.lowest_ask_cents.is_(None).asc(),
+            Product.lowest_ask_cents.asc(),
             Product.name.asc(),
             Product.id.asc(),
         )
     if query.sort == ProductDiscoverySort.PRICE_DESC:
         return statement.order_by(
-            lowest_prices.c.lowest_active_price_cents.is_(None).asc(),
-            lowest_prices.c.lowest_active_price_cents.desc(),
+            Product.lowest_ask_cents.is_(None).asc(),
+            Product.lowest_ask_cents.desc(),
             Product.name.asc(),
             Product.id.asc(),
         )
@@ -193,14 +168,12 @@ def _size_options(db: Session, query: ProductDiscoveryQuery) -> list[ProductDisc
     ]
 
 
-def _price_bounds(db: Session, query: ProductDiscoveryQuery, lowest_prices) -> ProductDiscoveryPriceBounds:
+def _price_bounds(db: Session, query: ProductDiscoveryQuery) -> ProductDiscoveryPriceBounds:
     row = db.execute(
         select(
-            func.min(lowest_prices.c.lowest_active_price_cents),
-            func.max(lowest_prices.c.lowest_active_price_cents),
+            func.min(Product.lowest_ask_cents),
+            func.max(Product.lowest_ask_cents),
         )
-        .select_from(Product)
-        .join(lowest_prices, lowest_prices.c.product_id == Product.id)
         .where(*_discovery_criteria(query, include_price=False))
     ).one()
     min_cents, max_cents = row
@@ -212,7 +185,6 @@ def _metadata(
     *,
     query: ProductDiscoveryQuery,
     total: int,
-    lowest_prices,
 ) -> ProductDiscoveryMetadata:
     return ProductDiscoveryMetadata(
         selected=ProductDiscoverySelectedFilters(
@@ -227,7 +199,7 @@ def _metadata(
         sort=query.sort,
         brands=_brand_options(db, query),
         sizes=_size_options(db, query),
-        price_bounds=_price_bounds(db, query, lowest_prices),
+        price_bounds=_price_bounds(db, query),
         total=total,
         limit=query.limit,
         offset=query.offset,
@@ -235,17 +207,15 @@ def _metadata(
 
 
 def discover_products(db: Session, query: ProductDiscoveryQuery) -> ProductDiscoveryResult:
-    lowest_prices = _lowest_active_listing_prices()
     base = (
         select(Product)
-        .outerjoin(lowest_prices, lowest_prices.c.product_id == Product.id)
         .where(*_discovery_criteria(query))
         .options(selectinload(Product.category))
     )
     total = _count_products(db, query)
     products = list(
         db.scalars(
-            _ordered_statement(base, query, lowest_prices)
+            _ordered_statement(base, query)
             .limit(query.limit)
             .offset(query.offset)
         ).all()
@@ -253,7 +223,7 @@ def discover_products(db: Session, query: ProductDiscoveryQuery) -> ProductDisco
     return ProductDiscoveryResult(
         products=products,
         total=total,
-        metadata=_metadata(db, query=query, total=total, lowest_prices=lowest_prices),
+        metadata=_metadata(db, query=query, total=total),
     )
 
 
@@ -297,6 +267,7 @@ def get_lowest_active_listing_for_product(db: Session, product: Product) -> List
             Listing.product_id == product.id,
             Listing.status == "active",
             Listing.available_quantity > 0,
+            Listing.currency == "USD",
         )
         .order_by(Listing.price_cents.asc(), Listing.created_at.asc(), Listing.id.asc())
         .limit(1)

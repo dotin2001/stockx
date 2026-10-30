@@ -61,6 +61,7 @@ class ProductVariant(TimestampMixin, Base):
     sku: Mapped[str | None] = mapped_column(String(128), nullable=True)
     __table_args__ = (
         CheckConstraint("sku IS NULL OR (sku = trim(sku) AND trim(sku) <> '')", name="sku_canonical"),
+        Index("ix_product_variants_product_size", "product_id", "size"),
         Index(
             "uq_product_variants_sku_normalized",
             func.lower(func.trim(sku)),

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, String
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, desc, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -15,6 +15,14 @@ class Listing(TimestampMixin, Base):
         CheckConstraint("price_cents >= 0", name="price_cents_non_negative"),
         CheckConstraint("available_quantity >= 0", name="available_quantity_non_negative"),
         CheckConstraint("status IN ('active', 'sold', 'cancelled')", name="status_known"),
+        Index(
+            "ix_listings_qualifying_product_price",
+            "product_id",
+            "price_cents",
+            "id",
+            postgresql_where=text("status = 'active' AND available_quantity > 0 AND currency = 'USD'"),
+        ),
+        Index("ix_listings_status_created_at_id", "status", desc("created_at"), "id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

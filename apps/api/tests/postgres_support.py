@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 import pytest
-from sqlalchemy import Engine, create_engine, make_url
+from sqlalchemy import Engine, create_engine, make_url, text
 
 
 POSTGRES_ENV_VAR = "TEST_POSTGRES_DATABASE_URL"
@@ -29,3 +29,17 @@ def require_postgres_url() -> str:
 
 def create_postgres_test_engine() -> Engine:
     return create_engine(require_postgres_url(), pool_pre_ping=True)
+
+
+def assert_explicit_test_database(engine: Engine) -> str:
+    """Prove the connection targets the database named by the explicit test URL."""
+    configured = make_url(require_postgres_url()).database
+    if not configured:
+        raise RuntimeError(f"{POSTGRES_ENV_VAR} must name a database")
+    with engine.connect() as connection:
+        actual = connection.scalar(text("SELECT current_database()"))
+    if actual != configured:
+        raise RuntimeError(
+            f"connected database {actual!r} does not match {POSTGRES_ENV_VAR} database {configured!r}"
+        )
+    return actual

@@ -573,7 +573,6 @@ def upsert_products(session: Session) -> None:
             brand=product.brand,
             description=product.description,
             image_url=product.image_url,
-            lowest_ask_cents=product.lowest_ask_cents,
             total_sold=product.total_sold,
         )
         statement = statement.on_conflict_do_update(
@@ -584,7 +583,6 @@ def upsert_products(session: Session) -> None:
                 "brand": statement.excluded.brand,
                 "description": statement.excluded.description,
                 "image_url": statement.excluded.image_url,
-                "lowest_ask_cents": statement.excluded.lowest_ask_cents,
                 "total_sold": statement.excluded.total_sold,
             },
         )

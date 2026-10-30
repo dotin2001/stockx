@@ -254,7 +254,6 @@ class ProductCreate(BaseModel):
     feature_bullets: list[str] = Field(default_factory=list)
     detail_rows: list[ProductDetailRow] = Field(default_factory=list)
     gallery_images: list[ProductGalleryImage] = Field(default_factory=list)
-    lowest_ask_cents: int | None = Field(default=None, ge=0)
     total_sold: int = Field(default=0, ge=0)
 
     @field_validator("feature_bullets", mode="before")
@@ -277,7 +276,6 @@ class ProductUpdate(BaseModel):
     feature_bullets: list[str] | None = None
     detail_rows: list[ProductDetailRow] | None = None
     gallery_images: list[ProductGalleryImage] | None = None
-    lowest_ask_cents: int | None = Field(default=None, ge=0)
     total_sold: int | None = Field(default=None, ge=0)
 
     @field_validator("feature_bullets", mode="before")

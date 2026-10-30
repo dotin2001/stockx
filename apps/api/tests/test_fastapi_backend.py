@@ -73,6 +73,7 @@ def create_store_listing(
     price_cents: int = 25000,
     status: str = "active",
     available_quantity: int = 10,
+    currency: str = "USD",
     email: str | None = None,
 ) -> Listing:
     user = User(
@@ -87,10 +88,20 @@ def create_store_listing(
         product_variant=product_variant,
         price_cents=price_cents,
         available_quantity=available_quantity,
-        currency="USD",
+        currency=currency,
         status=status,
     )
     db_session.add_all([user, listing])
+    db_session.commit()
+    # SQLite unit tests do not install the PostgreSQL trigger. Mirror its derived
+    # projection from qualifying fixture listings so catalog tests exercise the
+    # same read contract without treating the product field as fixture input.
+    qualifying_prices = [
+        item.price_cents
+        for item in product.listings
+        if item.status == "active" and item.available_quantity > 0 and item.currency == "USD"
+    ]
+    product.lowest_ask_cents = min(qualifying_prices, default=None)
     db_session.commit()
     db_session.refresh(listing)
     return listing
@@ -113,7 +124,6 @@ def create_catalog_product(
         brand=brand,
         description=f"{name} test product.",
         image_url=f"https://example.test/{slug}.png",
-        lowest_ask_cents=None,
         total_sold=total_sold,
     )
     db_session.add(product)
@@ -372,7 +382,7 @@ def test_schema_serialization_for_product_summary(db_session: Session) -> None:
 
     assert summary.slug == "jordan-1-retro-high-test"
     assert summary.category.slug == "sneakers"
-    assert summary.lowest_ask_cents == 24300
+    assert summary.lowest_ask_cents is None
     assert "available_quantity" not in dumped
     assert "inventory_summary" not in dumped
 
@@ -570,6 +580,7 @@ def test_public_product_discovery_filters_sorting_and_metadata(client: TestClien
 
     create_store_listing(db_session, jordan, price_cents=24000)
     create_store_listing(db_session, runner, price_cents=18000)
+    create_store_listing(db_session, runner, price_cents=1000, currency="EUR")
     create_store_listing(db_session, hoodie, price_cents=6000)
     create_store_listing(db_session, adidas, price_cents=17000, status="sold", available_quantity=0)
 
@@ -686,6 +697,7 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
     product_id = created_body["id"]
     assert created_body["slug"] == "admin-test-product"
     assert created_body["archived_at"] is None
+    assert created_body["lowest_ask_cents"] is None
     assert created_body["feature_bullets"] == ["Limited store release", "Premium construction"]
     assert created_body["detail_rows"] == [{"label": "Material", "value": "Leather"}]
     assert created_body["gallery_images"][0]["url"] == "https://example.test/admin-detail.png"
@@ -715,6 +727,7 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
         json={
             "name": "Admin Updated Product",
             "slug": "admin-updated-product",
+            "lowest_ask_cents": 1,
             "feature_bullets": [],
             "detail_rows": [{"label": "Care", "value": "Spot clean"}],
             "gallery_images": [],
@@ -724,6 +737,7 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
     assert updated.status_code == 200
     assert updated.json()["name"] == "Admin Updated Product"
     assert updated.json()["slug"] == "admin-updated-product"
+    assert updated.json()["lowest_ask_cents"] is None
     assert updated.json()["feature_bullets"] == []
     assert updated.json()["detail_rows"] == [{"label": "Care", "value": "Spot clean"}]
     assert updated.json()["gallery_images"] == []
@@ -1617,7 +1631,7 @@ def test_supreme_admin_product_listing_creation_api(client: TestClient, db_sessi
     assert managed.status_code == 200
     managed_product = next(item for item in managed.json()["items"] if item["id"] == str(product.id))
     assert managed_product["inventory_summary"]["total_listings"] == 3
-    assert managed_product["inventory_summary"]["active_listings"] == 2
+    assert managed_product["inventory_summary"]["active_listings"] == 1
     assert managed_product["inventory_summary"]["total_available_quantity"] == 4
     assert managed_product["inventory_summary"]["lowest_active_price_cents"] == 21000
     assert any(
