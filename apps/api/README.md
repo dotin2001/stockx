@@ -304,6 +304,50 @@ do not ask for or change passwords, and leave refresh-token records intact.
 In-app user management can promote or demote normal-admin access, but it cannot
 grant or remove supreme-admin status.
 
+## Refresh-token retention
+
+The retention command removes only refresh-token rows whose `expires_at` or
+non-null `revoked_at` is at least 30 days old. It never cleans up users,
+catalog, listings, orders, payment attempts, webhook events, or other business
+records. `stripe_webhook_events` remains a permanent deduplication ledger.
+
+For the first run, back up the database and confirm migrations are current.
+Preview the same bounded selection that deletion mode would use, inspect the
+reported UTC cutoff and count, and then execute at most one batch:
+
+```bash
+stockx-api-cleanup-refresh-tokens --dry-run --batch-size 100
+stockx-api-cleanup-refresh-tokens --batch-size 100
+```
+
+Each invocation captures one cutoff and processes no more than the specified
+positive batch size; it does not loop until the table is drained. A later run
+safely continues with the next eligible rows. Run the preview and one deletion
+batch daily at first, and monitor their counts before changing the batch size.
+Scheduling and overlap policy belong to the deployment operator; this
+repository does not install a scheduler or hosted workflow.
+
+Run the normal backend suite separately from the retention integration module:
+
+```bash
+cd apps/api
+pytest --ignore=tests/test_postgres_refresh_token_retention.py
+```
+
+For PostgreSQL-specific retention verification, use an explicitly selected
+test database that is migrated to the current revision:
+
+```bash
+cd apps/api
+export TEST_POSTGRES_DATABASE_URL='postgresql+psycopg://stockx:stockx@localhost:5432/stockx'
+ALEMBIC_DATABASE_URL="$TEST_POSTGRES_DATABASE_URL" alembic upgrade head
+pytest -q tests/test_postgres_refresh_token_retention.py
+```
+
+The PostgreSQL module deletes its own fixture rows and is skipped unless
+`TEST_POSTGRES_DATABASE_URL` is present. Never point that variable at a shared
+or production database.
+
 ## Verification
 
 ```bash

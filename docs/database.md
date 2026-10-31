@@ -85,6 +85,21 @@ products in each of Trading Cards, Handbags, and Watches. Catalog-only seeding
 remains available immediately after migrations and does not create a user
 account or login credential.
 
+## Refresh-token cleanup
+
+The backend's operator-controlled retention command applies a fixed 30-day
+post-expiration or post-revocation window to `refresh_tokens` only. Preview and
+delete one bounded batch with:
+
+```bash
+stockx-api-cleanup-refresh-tokens --dry-run --batch-size 100
+stockx-api-cleanup-refresh-tokens --batch-size 100
+```
+
+The full safety procedure and separate normal/PostgreSQL verification commands
+are documented in `apps/api/README.md`. No database scheduler is installed by
+the repository.
+
 To add deterministic sellable inventory, first register a user through the API
 or web app and promote that existing user to admin. Then run:
 

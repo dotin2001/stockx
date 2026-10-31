@@ -21,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 stockx-api-admin = "app.admin:main"
+stockx-api-cleanup-refresh-tokens = "app.cleanup_refresh_tokens:main"
 stockx-api-reconcile-payments = "app.reconcile_payments:main"
 stockx-api-smoke = "app.smoke:main"
 
