@@ -8,7 +8,7 @@ import { assertLocal, LocalRunError } from "./errors.mjs";
 import { hashApprovedPlan, inspectApprovedPlanCheckout } from "./approved-plan.mjs";
 import { loadGitHubProjectTask } from "./github-project.mjs";
 import { runProcess } from "./process.mjs";
-import { findPendingStatusRecord, findSuccessfulPlanRecord } from "./run-record.mjs";
+import { findStatusSyncDiagnosticRecord, findStatusSyncEvidence, findSuccessfulPlanRecord } from "./run-record.mjs";
 import { resolveTaskFile } from "./task.mjs";
 import { validatePlan } from "./validation.mjs";
 import { findOwnedStaleWorktrees } from "./worktree.mjs";
@@ -147,11 +147,25 @@ export async function preflightApply({ cwd = process.cwd(), changeName, commandR
   }
 }
 
-export async function preflightStatusSync({ cwd = process.cwd(), changeName, commandRunner = runProcess }) {
+export async function preflightStatusSync({ cwd = process.cwd(), changeName, commandRunner = runProcess, env = process.env }) {
   try {
     const root = await discoverRepository(cwd, commandRunner);
-    const pendingRecord = await findPendingStatusRecord(root, changeName);
-    return { root, pendingRecord };
+    let evidence;
+    try {
+      evidence = await findStatusSyncEvidence(root, changeName);
+    } catch (error) {
+      if (error instanceof LocalRunError) {
+        const diagnosticRecord = await findStatusSyncDiagnosticRecord(root, changeName);
+        if (diagnosticRecord) return { root, refusal: error, diagnosticRecord };
+      }
+      throw error;
+    }
+    if (evidence.kind !== "plan") return { root, evidence };
+    return {
+      root,
+      evidence,
+      applyTestEnvironment: resolveApplyTestEnvironment(env),
+    };
   } catch (error) {
     if (error instanceof LocalRunError) throw error;
     throw new LocalRunError("STATUS_SYNC_PREFLIGHT", `Status-sync preflight failed: ${error?.message || error}`);

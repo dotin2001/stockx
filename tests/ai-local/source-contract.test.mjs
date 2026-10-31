@@ -65,5 +65,11 @@ test("operator documentation matches the two-stage CLI contract", async () => {
   }
   assert.match(guide, /Implementation did not run|does not run implementation/i);
   assert.match(guide, /technical failures leave/i);
+  assert.match(guide, /\$openspec-apply-change/);
+  assert.match(guide, /unique successful\s+GitHub-backed plan/i);
+  assert.match(guide, /never invokes Codex/i);
+  assert.match(guide, /never[\s\S]*edits\/closes the issue/i);
+  assert.match(cli, /verifies a completed unstaged \$openspec-apply-change implementation/i);
+  assert.match(agents, /verifies a completed unstaged `\$openspec-apply-change` implementation/i);
   assert.doesNotMatch(guide, /Project mode is read-only|operator updates Project status manually/i);
 });

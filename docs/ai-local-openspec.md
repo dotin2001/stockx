@@ -62,9 +62,9 @@ export DATABASE_URL='postgresql+psycopg://stockx:stockx@localhost:5432/stockx'
 export TEST_POSTGRES_DATABASE_URL="$DATABASE_URL"
 ```
 
-The runner validates the URL as PostgreSQL during apply preflight. It passes the
-value only to the approved implementation Codex process and trusted
-implementation verification; plan runs, status synchronization, GitHub
+The runner validates the URL as PostgreSQL during apply or verified status-sync
+preflight. It passes the value only to the approved implementation Codex process
+and trusted backend verification; plan runs, pending status retries, GitHub
 commands, and unrelated children do not receive it. The value is not printed or
 stored in run records, and exact occurrences in child failures are redacted.
 
@@ -256,12 +256,47 @@ changes. It does not mean the code was committed, pushed, or merged.
 Partial output from a blocked implementation is discarded. No implementation
 patch reaches the checkout before `Blocked` is set.
 
+## Status sync after OpenSpec apply
+
+`--sync-status` supports the exact three-stage GitHub-backed workflow. For
+example:
+
+```bash
+npm run ai:local -- \
+  --project-owner dotin2001 \
+  --project-number 1 \
+  --issue 'dotin2001/stockx#5'
+
+$openspec-apply-change local-gh-dotin2001-stockx-5-0c4efdf802
+
+TEST_POSTGRES_DATABASE_URL='postgresql+psycopg://stockx:stockx@localhost:5432/stockx' \
+  npm run ai:local -- \
+  --sync-status local-gh-dotin2001-stockx-5-0c4efdf802
+```
+
+The database variable is required when the implementation changes `apps/api/`
+or `infra/`. It is forwarded only to trusted verification commands and is not
+stored in run records.
+
+When no pending transition exists, status sync finds the unique successful
+GitHub-backed plan and independently verifies the current checkout. The branch
+must be attached, all implementation changes must be unstaged, the delta must
+include the selected change's completed `tasks.md` plus at least one non-plan
+path, the approved plan must be unchanged apart from task checkbox markers,
+and strict OpenSpec validation plus every path-selected trusted check must pass.
+A successful `npm run ai:local -- --apply` record is not required. Earlier
+technical apply failures neither authorize nor prevent this verification.
+
+Status sync never invokes Codex, stages or applies a patch, creates a commit,
+pushes code, publishes artifacts, or edits/closes the issue. Its only remote
+mutation is the recorded Project item's recorded Status field.
+
 ## Status-sync recovery
 
-Local patch application and a remote Project update cannot be atomic. If the
-local implementation succeeds but the status update fails, the patch remains
-in the checkout and the run record keeps one pending allowlisted transition.
-Retry only that transition without rerunning Codex:
+Local verification and a remote Project update cannot be atomic. If the
+Project update fails after verification, the run record keeps one pending
+allowlisted `Done` transition. Retry only that transition without rerunning
+Codex or the expensive local checks:
 
 ```bash
 npm run ai:local -- --sync-status <change-name>
@@ -269,7 +304,14 @@ npm run ai:local -- --sync-status <change-name>
 
 The retry is idempotent: if GitHub accepted the earlier update but the local
 process failed before recording it, synchronization succeeds without changing
-anything else. A missing or ambiguous pending record is rejected.
+anything else. A unique pending transition always takes priority over current
+checkout verification. An already synchronized terminal result is returned
+without rerunning verification. Ambiguous evidence is rejected.
+
+If local verification fails, fix the reported checkout, plan, task, test, or
+database configuration problem and run the same `--sync-status` command again.
+No pending `Done` transition is created and the Project status remains
+unchanged.
 
 ## Security boundary
 
@@ -287,8 +329,8 @@ Project item's recorded single-select status field.
 
 Ignored version 3 records live under `.ai-local/runs/`. They contain allowlisted
 source identity, mode, task and plan hashes, base commit, phases, outcomes,
-changed paths, verification names, parent plan identity, and pending or completed
-status synchronization.
+changed paths, verification names, parent plan identity, completion basis, and
+pending or completed status synchronization.
 
 They exclude task and issue bodies, titles, prompts, raw model transcripts, raw
 GitHub responses, environment dumps, and credentials.
@@ -314,6 +356,7 @@ Common errors:
 - `GITHUB_ISSUE_STALE`: reconcile the item because its identity or status changed.
 - `GITHUB_STATUS_FIELD` or `GITHUB_STATUS_OPTION`: verify exact Project field and option names.
 - `STATUS_SYNC_FAILED`: keep the local patch and use the printed `--sync-status` command.
+- `TEST_POSTGRES_DATABASE_URL`: export a PostgreSQL SQLAlchemy URL before verifying backend or infrastructure changes.
 
 If a stale owned worktree is reported, inspect `git worktree list`. Only temporary
 paths named `stockx-ai-local-*` with a matching `owner.json` marker belong to the

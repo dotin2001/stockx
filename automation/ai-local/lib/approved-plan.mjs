@@ -99,6 +99,24 @@ export async function inspectApprovedPlanCheckout(root, changeName, commandRunne
   };
 }
 
+export async function inspectCompletedImplementationCheckout(root, commandRunner = runProcess) {
+  const branchResult = await commandRunner("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root }).catch(() => { throw new LocalRunError("BRANCH_DETACHED", "Status sync requires an attached Git branch"); });
+  const [head, staged, status] = await Promise.all([
+    commandRunner("git", ["rev-parse", "HEAD"], { cwd: root }),
+    commandRunner("git", ["diff", "--cached", "--name-only", "-z", "--"], { cwd: root }),
+    commandRunner("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root }),
+  ]);
+  assertLocal(staged.stdout.length === 0, "WORKTREE_STAGED", "Status sync does not accept staged changes");
+  const paths = parseStatus(status.stdout);
+  assertLocal(paths.length > 0, "IMPLEMENTATION_EMPTY", "Status sync requires a non-empty unstaged implementation delta");
+  return Object.freeze({
+    branch: branchResult.stdout.trim(),
+    baseSha: head.stdout.trim(),
+    paths: Object.freeze(paths),
+    statusSnapshot: status.stdout,
+  });
+}
+
 export async function assertApprovedCheckoutUnchanged({ root, changeName, baseSha, statusSnapshot, approvedPlanHash, commandRunner = runProcess }) {
   const [head, status, currentPlan] = await Promise.all([
     commandRunner("git", ["rev-parse", "HEAD"], { cwd: root }),

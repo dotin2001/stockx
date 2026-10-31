@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
 import { runCodexStage } from "../../automation/ai-local/lib/codex.mjs";
 import { LocalRunError } from "../../automation/ai-local/lib/errors.mjs";
 import { runLocalWorkflow } from "../../automation/ai-local/lib/runner.mjs";
-import { memoryIo, tempDirectory } from "./support/helpers.mjs";
+import { writeRunRecord } from "../../automation/ai-local/lib/run-record.mjs";
+import { initRepository, memoryIo, tempDirectory } from "./support/helpers.mjs";
 
 const baseSha = "a".repeat(40);
 const taskHash = "b".repeat(64);
@@ -273,6 +274,188 @@ test("status sync retry invokes neither Codex nor patch application", async () =
   assert.equal(result.projectStatus, "Done");
   assert.deepEqual(targets, ["done"]);
   assert.deepEqual(setup.calls, []);
+});
+
+test("status sync verifies a manual OpenSpec completion before persisting and applying Done", async () => {
+  const setup = await commonHarness();
+  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  const parent = planRecord(source);
+  const implementationPaths = ["openspec/changes/local-pilot/tasks.md", "docs/pilot.md"];
+  const order = [];
+  const testUrl = "postgresql+psycopg://sentinel-user:sentinel-password@localhost:5432/stockx";
+  const result = await runLocalWorkflow({
+    mode: "sync-status", changeName: "local-pilot", cwd: setup.root, io: memoryIo().io,
+    dependencies: {
+      ...setup.lifecycle,
+      preflightStatusSync: async () => ({ root: setup.root, evidence: { kind: "plan", record: parent }, baseSha, branch: "main", applyTestEnvironment: { TEST_POSTGRES_DATABASE_URL: testUrl } }),
+      inspectCompletion: async () => { order.push("inspect"); return { baseSha, branch: "main", paths: implementationPaths }; },
+      validateImplementation: async (options) => {
+        order.push("validate");
+        assert.equal(options.requirePostgres, true);
+        assert.equal(options.applyTestEnvironment.TEST_POSTGRES_DATABASE_URL, testUrl);
+        return ["git diff --check"];
+      },
+      prepareStatus: async ({ source: preparedSource, target }) => {
+        order.push("prepare");
+        assert.equal(preparedSource.itemId, "PVTI_1");
+        assert.equal(target, "done");
+        return { prepared: true };
+      },
+      updateStatus: async ({ target }) => {
+        order.push("update");
+        assert.equal(target, "done");
+        assert.deepEqual(setup.records.at(-1).statusSync, { state: "pending", target: "done", value: "Done" });
+        return { status: "Done" };
+      },
+      runStage: async () => { throw new Error("status sync must not invoke Codex"); },
+      applyImplementationPatch: async () => { throw new Error("status sync must not apply a patch"); },
+    },
+  });
+  assert.equal(result.projectStatus, "Done");
+  assert.equal(result.completionBasis, "verified-completion");
+  assert.deepEqual(order, ["inspect", "validate", "prepare", "update"]);
+  assert.deepEqual(result.paths, implementationPaths);
+  assert.equal(setup.records.at(-1).statusSync.state, "synchronized");
+  assert.equal(setup.records.at(-1).completionBasis, "verified-completion");
+  assert.deepEqual(setup.records.at(-1).verification, ["git diff --check"]);
+  assert.doesNotMatch(JSON.stringify(setup.records), /sentinel-user|sentinel-password|TEST_POSTGRES_DATABASE_URL/);
+  assert.deepEqual(setup.calls, []);
+});
+
+test("verified status sync records technical verification failure without preparing GitHub", async () => {
+  const setup = await commonHarness();
+  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  let remoteCalls = 0;
+  await assert.rejects(() => runLocalWorkflow({
+    mode: "sync-status", changeName: "local-pilot", cwd: setup.root, io: memoryIo().io,
+    dependencies: {
+      ...setup.lifecycle,
+      preflightStatusSync: async () => ({ root: setup.root, evidence: { kind: "plan", record: planRecord(source) }, baseSha, branch: "main", applyTestEnvironment: {} }),
+      inspectCompletion: async () => ({ baseSha, branch: "main", paths: ["openspec/changes/local-pilot/tasks.md", "docs/pilot.md"] }),
+      validateImplementation: async () => { throw new LocalRunError("TASK_INCOMPLETE", "tasks remain"); },
+      prepareStatus: async () => { remoteCalls += 1; },
+      updateStatus: async () => { remoteCalls += 1; },
+    },
+  }), (error) => error.code === "TASK_INCOMPLETE");
+  assert.equal(remoteCalls, 0);
+  assert.equal(setup.records.at(-1).outcome, "failure");
+  assert.equal(setup.records.at(-1).statusSync, null);
+});
+
+test("verified status sync leaves one pending Done transition when GitHub update fails", async () => {
+  const setup = await commonHarness();
+  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  await assert.rejects(() => runLocalWorkflow({
+    mode: "sync-status", changeName: "local-pilot", cwd: setup.root, io: memoryIo().io,
+    dependencies: {
+      ...setup.lifecycle,
+      preflightStatusSync: async () => ({ root: setup.root, evidence: { kind: "plan", record: planRecord(source) }, baseSha, branch: "main", applyTestEnvironment: {} }),
+      inspectCompletion: async () => ({ baseSha, branch: "main", paths: ["openspec/changes/local-pilot/tasks.md", "docs/pilot.md"] }),
+      validateImplementation: async () => ["git diff --check"],
+      prepareStatus: async () => ({ prepared: true }),
+      updateStatus: async () => { throw new LocalRunError("STATUS_SYNC_FAILED", "offline"); },
+    },
+  }), (error) => error.code === "STATUS_SYNC_FAILED" && /--sync-status local-pilot/.test(error.message));
+  const final = setup.records.at(-1);
+  assert.equal(final.outcome, "failure");
+  assert.deepEqual(final.statusSync, { state: "pending", target: "done", value: "Done" });
+});
+
+test("already synchronized status is idempotent and skips checkout verification and GitHub", async () => {
+  const setup = await commonHarness();
+  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  const synchronized = { ...planRecord(source), mode: "sync-status", parentPlanRunId: "plan-run", statusSync: { state: "synchronized", target: "done", value: "Done" } };
+  const never = async () => { throw new Error("idempotent status sync must not perform expensive or remote work"); };
+  const result = await runLocalWorkflow({
+    mode: "sync-status", changeName: "local-pilot", cwd: setup.root, io: memoryIo().io,
+    dependencies: {
+      ...setup.lifecycle,
+      preflightStatusSync: async () => ({ root: setup.root, evidence: { kind: "synchronized", record: synchronized } }),
+      inspectCompletion: never,
+      validateImplementation: never,
+      prepareStatus: never,
+      updateStatus: never,
+    },
+  });
+  assert.equal(result.projectStatus, "Done");
+  assert.equal(result.completionBasis, "synchronized-result");
+});
+
+test("offline GitHub-plan fixture reaches Done after manual completion despite failed apply history", async () => {
+  const root = await initRepository();
+  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  const parent = planRecord(source);
+  await writeRunRecord(root, parent);
+  await writeRunRecord(root, { ...parent, runId: "failed-apply", mode: "apply", parentPlanRunId: parent.runId, phase: "validation", outcome: "failure", error: "technical failure" });
+  const changeRoot = path.join(root, "openspec", "changes", "local-pilot");
+  await mkdir(path.join(changeRoot, "specs", "pilot"), { recursive: true });
+  await writeFile(path.join(changeRoot, ".openspec.yaml"), "schema: spec-driven\n");
+  await writeFile(path.join(changeRoot, "proposal.md"), "# Proposal\n");
+  await writeFile(path.join(changeRoot, "design.md"), "# Design\n");
+  await writeFile(path.join(changeRoot, "tasks.md"), "- [x] implement\n");
+  await writeFile(path.join(changeRoot, "specs", "pilot", "spec.md"), "## Purpose\nPilot.\n");
+  await mkdir(path.join(root, "docs"));
+  await writeFile(path.join(root, "docs", "pilot.md"), "implemented\n");
+
+  const order = [];
+  const result = await runLocalWorkflow({
+    mode: "sync-status", changeName: "local-pilot", cwd: root, io: memoryIo().io,
+    dependencies: {
+      validateImplementation: async ({ paths }) => {
+        order.push("validate");
+        assert.ok(paths.includes("openspec/changes/local-pilot/tasks.md"));
+        assert.ok(paths.includes("docs/pilot.md"));
+        return ["git diff --check"];
+      },
+      prepareStatus: async ({ source: recorded, target }) => {
+        order.push("prepare");
+        assert.equal(recorded.itemId, source.itemId);
+        assert.equal(target, "done");
+        return { prepared: true };
+      },
+      updateStatus: async () => { order.push("update"); return { status: "Done" }; },
+    },
+  });
+  assert.equal(result.projectStatus, "Done");
+  assert.equal(result.completionBasis, "verified-completion");
+  assert.deepEqual(order, ["validate", "prepare", "update"]);
+});
+
+test("ambiguous status evidence records a technical refusal and never calls GitHub", async () => {
+  const root = await initRepository();
+  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  const pending = { ...planRecord(source), runId: "pending-one", mode: "apply", parentPlanRunId: "plan-run", statusSync: { state: "pending", target: "done", value: "Done" } };
+  await writeRunRecord(root, pending);
+  await writeRunRecord(root, { ...pending, runId: "pending-two" });
+  let remoteCalls = 0;
+  await assert.rejects(() => runLocalWorkflow({
+    mode: "sync-status", changeName: "local-pilot", cwd: root, io: memoryIo().io,
+    dependencies: {
+      prepareStatus: async () => { remoteCalls += 1; },
+      updateStatus: async () => { remoteCalls += 1; },
+    },
+  }), (error) => error.code === "STATUS_SYNC_AMBIGUOUS" && /run record/.test(error.message));
+  assert.equal(remoteCalls, 0);
+  const directory = path.join(root, ".ai-local", "runs");
+  const records = await Promise.all((await readdir(directory)).map(async (name) => JSON.parse(await readFile(path.join(directory, name), "utf8"))));
+  const refusal = records.find((record) => record.mode === "sync-status");
+  assert.equal(refusal.outcome, "failure");
+  assert.equal(refusal.completionBasis, "refused-evidence");
+  assert.equal(refusal.statusSync, null);
+
+  const markdownRoot = await initRepository();
+  const markdown = planRecord({ kind: "markdown", path: "tasks/pilot.md" });
+  await writeRunRecord(markdownRoot, markdown);
+  await assert.rejects(() => runLocalWorkflow({
+    mode: "sync-status", changeName: "local-pilot", cwd: markdownRoot, io: memoryIo().io,
+    dependencies: {
+      prepareStatus: async () => { remoteCalls += 1; },
+      updateStatus: async () => { remoteCalls += 1; },
+    },
+  }), (error) => error.code === "STATUS_SYNC_SOURCE" && /run record/.test(error.message));
+  assert.equal(remoteCalls, 0);
+  const markdownRecords = await Promise.all((await readdir(path.join(markdownRoot, ".ai-local", "runs"))).map(async (name) => JSON.parse(await readFile(path.join(markdownRoot, ".ai-local", "runs", name), "utf8"))));
+  assert.equal(markdownRecords.find((record) => record.mode === "sync-status").outcome, "failure");
 });
 
 test("Codex stage uses trusted prompt/schema and parses fake executable output", async () => {

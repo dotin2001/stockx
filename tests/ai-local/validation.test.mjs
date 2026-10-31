@@ -164,6 +164,15 @@ test("implementation validation protects authority, task truth, and verification
   assert.equal(pytestCall.options.env.TEST_POSTGRES_DATABASE_URL, testUrl);
   assert.equal(backendCalls.find((call) => call.command === "openspec").options.env, undefined);
 
+  await assert.rejects(() => validateImplementation({
+    root,
+    changeName,
+    paths: [`openspec/changes/${changeName}/tasks.md`, "apps/api/app/example.py"],
+    approvedPlanHash,
+    requirePostgres: true,
+    commandRunner: async () => ({ stdout: "", stderr: "" }),
+  }), (error) => error.code === "TEST_POSTGRES_DATABASE_URL");
+
   await writeFile(path.join(root, "openspec", "changes", changeName, "proposal.md"), "# Rewritten\n");
   await assert.rejects(() => validateImplementation({ root, changeName, paths: captured.paths, approvedPlanHash, commandRunner: async () => ({ stdout: "", stderr: "" }) }), /approved/);
 });

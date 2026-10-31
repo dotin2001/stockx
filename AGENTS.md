@@ -164,5 +164,9 @@ alembic downgrade base
   `Blocked` after a structured task blocker. Technical failures leave the item in
   its source status. GitHub credentials must never reach Codex, and the runner
   must never edit issues, commit, push, open pull requests, merge, or publish.
-- A pending terminal status update may be retried only with
-  `npm run ai:local -- --sync-status <change-name>` and a proven local run record.
+- `npm run ai:local -- --sync-status <change-name>` first retries a proven
+  pending terminal transition. Otherwise, for a unique successful GitHub-backed
+  plan, it verifies a completed unstaged `$openspec-apply-change` implementation
+  against the approved plan and trusted checks before recording and setting
+  `Done`. Status sync never invokes Codex, applies a patch, commits, pushes,
+  publishes, or edits/closes the issue.

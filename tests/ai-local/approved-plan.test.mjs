@@ -3,8 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-import { copyApprovedPlan, hashApprovedPlan, inspectApprovedPlanCheckout } from "../../automation/ai-local/lib/approved-plan.mjs";
-import { applyImplementationPatch, captureIndexDiff } from "../../automation/ai-local/lib/validation.mjs";
+import { copyApprovedPlan, hashApprovedPlan, inspectApprovedPlanCheckout, inspectCompletedImplementationCheckout } from "../../automation/ai-local/lib/approved-plan.mjs";
+import { applyImplementationPatch, assertImplementationPaths, captureIndexDiff } from "../../automation/ai-local/lib/validation.mjs";
 import { cleanupIsolatedWorktree, createIsolatedWorktree } from "../../automation/ai-local/lib/worktree.mjs";
 import { git, initRepository } from "./support/helpers.mjs";
 
@@ -77,4 +77,20 @@ test("implementation application rejects checkout or approved-plan drift", async
   const approved = await hashApprovedPlan(root, changeName);
   await writeFile(path.join(root, "openspec", "changes", changeName, "proposal.md"), "# Changed after approval\n");
   await assert.rejects(() => applyImplementationPatch({ root, changeName, baseSha, statusSnapshot: inspected.statusSnapshot, approvedPlanHash: approved.hash, patch: "" }), (error) => ["STALE_WORKTREE", "STALE_PLAN"].includes(error.code));
+});
+
+test("completed implementation inspection is read-only and rejects staged state", async () => {
+  const root = await initRepository();
+  await writePlan(root, "- [x] 1.1 Implement feature\n");
+  await mkdir(path.join(root, "docs"));
+  await writeFile(path.join(root, "docs", "feature.md"), "implemented\n");
+  const before = git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).stdout;
+  const inspected = await inspectCompletedImplementationCheckout(root);
+  assertImplementationPaths(inspected.paths, changeName);
+  assert.deepEqual([...inspected.paths].sort(), [`openspec/changes/${changeName}/.openspec.yaml`, `openspec/changes/${changeName}/design.md`, `openspec/changes/${changeName}/proposal.md`, `openspec/changes/${changeName}/specs/feature/spec.md`, `openspec/changes/${changeName}/tasks.md`, "docs/feature.md"].sort());
+  assert.equal(git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).stdout, before);
+  assert.equal(git(root, ["diff", "--cached", "--name-only"]).stdout, "");
+
+  git(root, ["add", "docs/feature.md"]);
+  await assert.rejects(() => inspectCompletedImplementationCheckout(root), (error) => error.code === "WORKTREE_STAGED");
 });

@@ -3,7 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 
-import { addApplyTestEnvironment } from "./apply-environment.mjs";
+import { addApplyTestEnvironment, TEST_POSTGRES_DATABASE_URL } from "./apply-environment.mjs";
 import { assertLocal, LocalRunError } from "./errors.mjs";
 import { assertApprovedCheckoutUnchanged, hashApprovedPlan } from "./approved-plan.mjs";
 import { runProcess, sanitizedChildEnvironment } from "./process.mjs";
@@ -165,8 +165,15 @@ function validationEnvironment(dependencyRoot, applyTestEnvironment) {
   return env;
 }
 
-export async function validateImplementation({ root, dependencyRoot, changeName, paths, approvedPlanHash, applyTestEnvironment = {}, commandRunner = runProcess }) {
+export async function validateImplementation({ root, dependencyRoot, changeName, paths, approvedPlanHash, applyTestEnvironment = {}, requirePostgres = false, commandRunner = runProcess }) {
   assertImplementationPaths(paths, changeName);
+  if (requirePostgres && paths.some((filePath) => filePath.startsWith("apps/api/") || filePath.startsWith("infra/"))) {
+    assertLocal(
+      typeof applyTestEnvironment?.[TEST_POSTGRES_DATABASE_URL] === "string",
+      "TEST_POSTGRES_DATABASE_URL",
+      `${TEST_POSTGRES_DATABASE_URL} is required to verify backend or infrastructure changes before status sync`,
+    );
+  }
   assertLocal(/^[a-f0-9]{64}$/i.test(approvedPlanHash || ""), "PLAN_IDENTITY", "Approved plan digest is invalid");
   const currentPlan = await hashApprovedPlan(root, changeName);
   assertLocal(currentPlan.hash === approvedPlanHash, "PLAN_CHANGED", "Implementation changed the human-approved OpenSpec contract");

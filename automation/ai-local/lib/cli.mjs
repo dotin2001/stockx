@@ -12,7 +12,9 @@ Task and Project intake create and validate an OpenSpec plan, leave only that
 plan unstaged for review, and stop. --apply explicitly approves one reviewed
 plan and runs implementation. For a GitHub-backed plan, a successful apply
 moves only the selected Project item to Done and a structured task blocker
-moves it to Blocked. --sync-status retries a previously recorded pending update.`;
+moves it to Blocked. --sync-status first retries a recorded pending update;
+otherwise it verifies a completed unstaged $openspec-apply-change implementation
+against its successful GitHub-backed plan and moves the recorded item to Done.`;
 
 const OPTION_NAMES = [
   "task", "project-owner", "project-number", "status-field", "status-value", "done-status",

@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { copyApprovedPlan, hashApprovedPlan, listApprovedPlanPaths } from "./approved-plan.mjs";
+import { copyApprovedPlan, hashApprovedPlan, inspectCompletedImplementationCheckout, listApprovedPlanPaths } from "./approved-plan.mjs";
 import { LocalRunError, asLocalError, sanitizeText } from "./errors.mjs";
 import { prepareProjectStatus, updateProjectStatus } from "./github-project.mjs";
 import { formatApplySuccess, formatBlocked, formatPlanReady, formatStatusSync } from "./output.mjs";
@@ -248,29 +248,84 @@ async function runApplyWorkflow(options) {
 async function runStatusSyncWorkflow(options) {
   const { cwd, changeName, io, signal, now, dependencies } = options;
   const preflightFn = dependencies.preflightStatusSync || preflightStatusSync;
+  const inspectCompletionFn = dependencies.inspectCompletion || inspectCompletedImplementationCheckout;
+  const validateImplementationFn = dependencies.validateImplementation || validateImplementation;
   const prepareStatusFn = dependencies.prepareStatus || prepareProjectStatus;
   const updateStatusFn = dependencies.updateStatus || updateProjectStatus;
   const recordWriter = dependencies.writeRecord || writeRunRecord;
-  io.phase("status-sync", `retrying recorded Project update for ${changeName}`);
+  io.phase("status-sync", `resolving retry or verified completion for ${changeName}`);
   const context = await preflightFn({ cwd, changeName });
-  const pending = context.pendingRecord;
-  const runId = createRunId(now(), pending.taskHash);
-  let record = initialLinkedRunRecord({ runId, mode: "sync-status", parent: pending, baseSha: pending.baseSha, branch: pending.branch, tools: pending.tools, approvedPlanHash: pending.approvedPlanHash, now: now() });
+  const evidence = context.evidence || (context.pendingRecord ? { kind: "pending", record: context.pendingRecord } : context.diagnosticRecord ? { kind: "refusal", record: context.diagnosticRecord } : null);
+  if (!evidence?.record) throw new LocalRunError("STATUS_SYNC_EVIDENCE", "Status-sync preflight returned no usable evidence");
+  const parent = evidence.record;
+  const completionBasis = evidence.kind === "plan" ? "verified-completion" : evidence.kind === "pending" ? "pending-retry" : evidence.kind === "synchronized" ? "synchronized-result" : "refused-evidence";
+  const runId = createRunId(now(), parent.taskHash);
+  let record = initialLinkedRunRecord({
+    runId,
+    mode: "sync-status",
+    parent,
+    baseSha: context.baseSha || parent.baseSha,
+    branch: context.branch || parent.branch,
+    tools: parent.tools,
+    approvedPlanHash: parent.approvedPlanHash,
+    completionBasis,
+    now: now(),
+  });
   let recordPath = await recordWriter(context.root, record);
   try {
-    const prepared = await prepareStatusFn({ root: context.root, source: pending.source, target: pending.statusSync.target, signal });
-    const result = await updateStatusFn({ root: context.root, prepared, target: pending.statusSync.target, signal });
-    const completedPending = updateRunRecord(pending, { statusSync: { ...pending.statusSync, state: "synchronized", value: result.status } }, now());
-    await recordWriter(context.root, completedPending);
-    record = updateRunRecord(record, { phase: "complete", outcome: "success", statusSync: { state: "synchronized", target: pending.statusSync.target, value: result.status } }, now());
+    if (context.refusal) throw context.refusal;
+    if (evidence.kind === "synchronized") {
+      record = updateRunRecord(record, { phase: "complete", outcome: "success", statusSync: { ...parent.statusSync } }, now());
+      recordPath = await recordWriter(context.root, record);
+      io.info(formatStatusSync({ changeName, status: parent.statusSync.value, recordPath, completionBasis }));
+      return { outcome: "success", mode: "sync-status", recordPath, projectStatus: parent.statusSync.value, completionBasis };
+    }
+
+    if (evidence.kind === "pending") {
+      const prepared = await prepareStatusFn({ root: context.root, source: parent.source, target: parent.statusSync.target, signal });
+      const result = await updateStatusFn({ root: context.root, prepared, target: parent.statusSync.target, signal });
+      const completedPending = updateRunRecord(parent, { statusSync: { ...parent.statusSync, state: "synchronized", value: result.status } }, now());
+      await recordWriter(context.root, completedPending);
+      record = updateRunRecord(record, { phase: "complete", outcome: "success", statusSync: { state: "synchronized", target: parent.statusSync.target, value: result.status } }, now());
+      recordPath = await recordWriter(context.root, record);
+      io.info(formatStatusSync({ changeName, status: result.status, recordPath, completionBasis }));
+      return { outcome: "success", mode: "sync-status", recordPath, projectStatus: result.status, completionBasis };
+    }
+
+    if (evidence.kind !== "plan") throw new LocalRunError("STATUS_SYNC_EVIDENCE", "Status-sync evidence kind is unsupported");
+    io.phase("validation", "verifying the completed unstaged implementation");
+    record = updateRunRecord(record, { phase: "validation" }, now());
     recordPath = await recordWriter(context.root, record);
-    io.info(formatStatusSync({ changeName, status: result.status, recordPath }));
-    return { outcome: "success", mode: "sync-status", recordPath, projectStatus: result.status };
+    const checkout = await inspectCompletionFn(context.root);
+    record = updateRunRecord(record, { baseSha: checkout.baseSha, branch: checkout.branch }, now());
+    recordPath = await recordWriter(context.root, record);
+    const verification = await validateImplementationFn({
+      root: context.root,
+      dependencyRoot: context.root,
+      changeName,
+      paths: checkout.paths,
+      approvedPlanHash: parent.approvedPlanHash,
+      applyTestEnvironment: context.applyTestEnvironment,
+      requirePostgres: true,
+    });
+    record = updateRunRecord(record, { changedPaths: checkout.paths, verification }, now());
+    recordPath = await recordWriter(context.root, record);
+
+    const prepared = await prepareStatusFn({ root: context.root, source: parent.source, target: "done", signal });
+    const pending = { state: "pending", target: "done", value: statusValue(parent.source, "done") };
+    record = updateRunRecord(record, { phase: "status-sync", statusSync: pending }, now());
+    recordPath = await recordWriter(context.root, record);
+    const result = await updateStatusFn({ root: context.root, prepared, target: "done", signal });
+    record = updateRunRecord(record, { phase: "complete", outcome: "success", statusSync: { ...pending, state: "synchronized", value: result.status } }, now());
+    recordPath = await recordWriter(context.root, record);
+    io.info(formatStatusSync({ changeName, status: result.status, recordPath, completionBasis, verification }));
+    return { outcome: "success", mode: "sync-status", recordPath, paths: checkout.paths, verification, projectStatus: result.status, completionBasis };
   } catch (error) {
     const localError = asLocalError(error, "STATUS_SYNC_FAILED");
     record = updateRunRecord(record, { outcome: "failure", error: `${localError.code}: ${localError.message}` }, now());
     recordPath = await recordWriter(context.root, record).catch(() => recordPath);
-    localError.message = `${localError.message} (run record: ${recordPath})`;
+    const retry = record.statusSync?.state === "pending" ? ` Retry with: npm run ai:local -- --sync-status ${changeName}.` : "";
+    localError.message = `${localError.message.replace(/[.\s]+$/, "")}.${retry} (run record: ${recordPath})`;
     throw localError;
   }
 }

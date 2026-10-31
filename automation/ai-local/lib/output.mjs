@@ -54,6 +54,12 @@ export function formatBlocked({ changeName, sourceLabel, summary, recordPath, pr
   ].join("\n");
 }
 
-export function formatStatusSync({ changeName, status, recordPath }) {
-  return [`GitHub Project status synchronized: ${changeName} -> ${status}`, `Run record: ${recordPath}`].join("\n");
+export function formatStatusSync({ changeName, status, recordPath, completionBasis = null, verification = [] }) {
+  return [
+    `GitHub Project status synchronized: ${changeName} -> ${status}`,
+    ...(completionBasis ? [`Completion basis: ${completionBasis}`] : []),
+    ...(verification.length ? [`Verification: ${verification.join(", ")}`] : []),
+    "No issue was edited or closed, and no code was committed, pushed, or published.",
+    `Run record: ${recordPath}`,
+  ].join("\n");
 }

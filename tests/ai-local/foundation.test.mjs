@@ -11,7 +11,7 @@ import { LocalRunError, sanitizeText } from "../../automation/ai-local/lib/error
 import { githubEnvironment } from "../../automation/ai-local/lib/github-project.mjs";
 import { inspectRepository, inspectTools, preflight, preflightApply } from "../../automation/ai-local/lib/preflight.mjs";
 import { runProcess, sanitizedChildEnvironment } from "../../automation/ai-local/lib/process.mjs";
-import { createRunId, findPendingStatusRecord, findSuccessfulPlanRecord, initialRunRecord, updateRunRecord, writeRunRecord } from "../../automation/ai-local/lib/run-record.mjs";
+import { createRunId, findPendingStatusRecord, findStatusSyncEvidence, findSuccessfulPlanRecord, initialRunRecord, updateRunRecord, writeRunRecord } from "../../automation/ai-local/lib/run-record.mjs";
 import { createGitHubIssueTask, resolveTaskFile, slugifyTitle } from "../../automation/ai-local/lib/task.mjs";
 import { git, initRepository, tempDirectory } from "./support/helpers.mjs";
 
@@ -220,6 +220,45 @@ test("pending status discovery requires a proven GitHub terminal transition", as
   await writeRunRecord(root, record);
   assert.equal((await findPendingStatusRecord(root, githubTask.changeName)).runId, "apply-one");
   await assert.rejects(() => findPendingStatusRecord(root, "local-missing"), (error) => error.code === "STATUS_SYNC_MISSING");
+});
+
+test("status-sync evidence prioritizes pending, recognizes synchronized, and falls back to the GitHub plan", async () => {
+  const githubTask = createGitHubIssueTask({ projectOwner: "acme", projectNumber: 7, itemId: "PVTI_1", repository: "acme/shop", number: 12, title: "Task", body: "body", url: "https://github.com/acme/shop/issues/12" });
+  const makePlan = (runId = "plan-one") => updateRunRecord(initialRunRecord({
+    runId,
+    task: githubTask,
+    baseSha: "b".repeat(40),
+    branch: "main",
+    tools: { node: "22", git: "git", openspec: "1.12.0", codex: "1" },
+  }), { phase: "complete", outcome: "success", approvedPlanHash: "c".repeat(64) });
+
+  const fallback = await tempDirectory();
+  const plan = makePlan();
+  await writeRunRecord(fallback, plan);
+  await writeRunRecord(fallback, { ...plan, runId: "apply-failed", mode: "apply", parentPlanRunId: plan.runId, phase: "validation", outcome: "failure", error: "tests failed" });
+  assert.deepEqual(await findStatusSyncEvidence(fallback, githubTask.changeName), { kind: "plan", record: plan });
+
+  const pending = { ...plan, runId: "apply-pending", mode: "apply", parentPlanRunId: plan.runId, outcome: "failure", statusSync: { state: "pending", target: "done", value: "Done" } };
+  await writeRunRecord(fallback, pending);
+  assert.equal((await findStatusSyncEvidence(fallback, githubTask.changeName)).record.runId, "apply-pending");
+
+  const synchronized = await tempDirectory();
+  await writeRunRecord(synchronized, plan);
+  await writeRunRecord(synchronized, { ...pending, statusSync: { state: "synchronized", target: "done", value: "Done" } });
+  assert.equal((await findStatusSyncEvidence(synchronized, githubTask.changeName)).kind, "synchronized");
+
+  const ambiguous = await tempDirectory();
+  await writeRunRecord(ambiguous, pending);
+  await writeRunRecord(ambiguous, { ...pending, runId: "second-pending" });
+  await assert.rejects(() => findStatusSyncEvidence(ambiguous, githubTask.changeName), (error) => error.code === "STATUS_SYNC_AMBIGUOUS");
+
+  const markdown = await tempDirectory();
+  const markdownTask = { source: { kind: "markdown", path: "tasks/a.md" }, hash: "a".repeat(64), changeName: "local-a" };
+  const markdownPlan = updateRunRecord(initialRunRecord({ runId: "markdown-plan", task: markdownTask, baseSha: "b".repeat(40), branch: "main", tools: { node: "22", git: "git", openspec: "1.12.0", codex: "1" } }), { phase: "complete", outcome: "success", approvedPlanHash: "c".repeat(64) });
+  await writeRunRecord(markdown, markdownPlan);
+  await assert.rejects(() => findStatusSyncEvidence(markdown, "local-a"), (error) => error.code === "STATUS_SYNC_SOURCE");
+  const missing = await tempDirectory();
+  await assert.rejects(() => findStatusSyncEvidence(missing, "local-missing"), (error) => error.code === "PLAN_RECORD_MISSING");
 });
 
 test("repository and tool preflight fail closed on dirty or incompatible state", async () => {

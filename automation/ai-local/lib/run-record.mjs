@@ -48,9 +48,10 @@ export function initialRunRecord({ runId, task, baseSha, branch, tools, mode = "
   };
 }
 
-export function initialLinkedRunRecord({ runId, mode, parent, baseSha, branch, tools = {}, approvedPlanHash = null, now = new Date() }) {
+export function initialLinkedRunRecord({ runId, mode, parent, baseSha, branch, tools = {}, approvedPlanHash = null, completionBasis = null, now = new Date() }) {
   const task = { source: parent.source, hash: parent.taskHash, changeName: parent.changeName };
-  return initialRunRecord({ runId, task, baseSha, branch, tools, mode, parentPlanRunId: parent.mode === "plan" ? parent.runId : parent.parentPlanRunId, approvedPlanHash, now });
+  const record = initialRunRecord({ runId, task, baseSha, branch, tools, mode, parentPlanRunId: parent.mode === "plan" ? parent.runId : parent.parentPlanRunId, approvedPlanHash, now });
+  return completionBasis ? { ...record, completionBasis } : record;
 }
 
 export function updateRunRecord(record, updates, now = new Date()) {
@@ -113,4 +114,52 @@ export async function findPendingStatusRecord(root, changeName) {
   assertLocal(matches.length === 1, "STATUS_SYNC_AMBIGUOUS", `Multiple pending Project status updates exist for ${changeName}`);
   assertLocal(matches[0].source?.kind === "github-issue", "STATUS_SYNC_SOURCE", "Pending status update is not GitHub-backed");
   return Object.freeze(matches[0]);
+}
+
+export async function findStatusSyncDiagnosticRecord(root, changeName) {
+  if (!validChangeName(changeName)) return null;
+  const matches = (await readRecords(root)).filter((record) => record?.version === 3 && record.changeName === changeName && ["plan", "apply", "sync-status"].includes(record.mode));
+  matches.sort((left, right) => String(right.updatedAt || right.startedAt || "").localeCompare(String(left.updatedAt || left.startedAt || "")));
+  for (const record of matches) {
+    try { return Object.freeze(assertUsableRecord(record, record.mode)); } catch { /* Try another record only for refusal provenance. */ }
+  }
+  return null;
+}
+
+function terminalIdentity(record) {
+  const source = recordSource(record.source);
+  return JSON.stringify({
+    source,
+    target: record.statusSync?.target,
+    value: record.statusSync?.value,
+    approvedPlanHash: record.approvedPlanHash || null,
+  });
+}
+
+function assertTerminalRecord(record) {
+  assertLocal(["plan", "apply", "sync-status"].includes(record?.mode), "RUN_RECORD_INVALID", "Local terminal status record has an unsupported mode");
+  assertUsableRecord(record, record.mode);
+  assertLocal(record.source?.kind === "github-issue", "STATUS_SYNC_SOURCE", "Terminal status update is not GitHub-backed");
+  assertLocal(["done", "blocked"].includes(record.statusSync?.target), "RUN_RECORD_INVALID", "Terminal status target is invalid");
+  return record;
+}
+
+export async function findStatusSyncEvidence(root, changeName) {
+  assertLocal(validChangeName(changeName), "CHANGE_NAME", "Status sync requires a safe kebab-case change name");
+  const records = await readRecords(root);
+  const pending = records.filter((record) => record?.version === 3 && record.changeName === changeName && record.statusSync?.state === "pending" && ["done", "blocked"].includes(record.statusSync.target));
+  assertLocal(pending.length <= 1, "STATUS_SYNC_AMBIGUOUS", `Multiple pending Project status updates exist for ${changeName}`);
+  if (pending.length === 1) return Object.freeze({ kind: "pending", record: Object.freeze(assertTerminalRecord(pending[0])) });
+
+  const synchronized = records.filter((record) => record?.version === 3 && record.changeName === changeName && record.statusSync?.state === "synchronized" && ["done", "blocked"].includes(record.statusSync.target));
+  if (synchronized.length > 0) {
+    synchronized.forEach(assertTerminalRecord);
+    assertLocal(new Set(synchronized.map(terminalIdentity)).size === 1, "STATUS_SYNC_AMBIGUOUS", `Conflicting synchronized Project status updates exist for ${changeName}`);
+    synchronized.sort((left, right) => String(right.updatedAt || right.startedAt || "").localeCompare(String(left.updatedAt || left.startedAt || "")));
+    return Object.freeze({ kind: "synchronized", record: Object.freeze(synchronized[0]) });
+  }
+
+  const plan = await findSuccessfulPlanRecord(root, changeName);
+  assertLocal(plan.source?.kind === "github-issue", "STATUS_SYNC_SOURCE", "Status sync requires a GitHub-backed plan");
+  return Object.freeze({ kind: "plan", record: plan });
 }
