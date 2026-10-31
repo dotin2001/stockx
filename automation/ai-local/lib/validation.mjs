@@ -121,12 +121,12 @@ export async function validatePlan({ root, changeName, paths, commandRunner = ru
   await commandRunner("openspec", ["validate", changeName, "--strict"], { cwd: root });
 }
 
-export function verificationCommandsForPaths(paths) {
-  const commands = [{ name: "git diff --check", command: "git", args: ["diff", "--check", "--"] }];
+export function verificationCommandsForPaths(paths, { baseSha = null } = {}) {
+  const commands = [{ name: "git diff --check", command: "git", args: baseSha ? ["diff", "--check", baseSha, "--"] : ["diff", "--check", "--"] }];
   const nonPlan = paths.filter((filePath) => !filePath.startsWith("openspec/changes/"));
   const known = nonPlan.every((filePath) => [
     "apps/", "automation/", "bin/", "css/", "docs/", "infra/", "js/", "packages/", "tests/",
-  ].some((prefix) => filePath.startsWith(prefix)) || /^(?:README|LICENSE|CONTRIBUTING)(?:\.|$)/i.test(filePath) || ["package.json", "package-lock.json", "project.md"].includes(filePath));
+  ].some((prefix) => filePath.startsWith(prefix)) || /^(?:README|LICENSE|CONTRIBUTING)(?:\.|$)/i.test(filePath) || ["AGENTS.md", "package.json", "package-lock.json", "project.md"].includes(filePath));
   assertLocal(known, "VERIFICATION_POLICY", "No trusted verification policy matches one or more implementation paths");
   if (nonPlan.some((filePath) => filePath.startsWith("apps/web/"))) {
     commands.push(

@@ -7,6 +7,7 @@ import { runCodexStage } from "../../automation/ai-local/lib/codex.mjs";
 import { LocalRunError } from "../../automation/ai-local/lib/errors.mjs";
 import { runLocalWorkflow } from "../../automation/ai-local/lib/runner.mjs";
 import { writeRunRecord } from "../../automation/ai-local/lib/run-record.mjs";
+import { createGitHubIssueTask } from "../../automation/ai-local/lib/task.mjs";
 import { initRepository, memoryIo, tempDirectory } from "./support/helpers.mjs";
 
 const baseSha = "a".repeat(40);
@@ -29,6 +30,74 @@ function task(root, source = { kind: "markdown", path: "tasks/pilot.md" }) {
 
 function planRecord(source = { kind: "markdown", path: "tasks/pilot.md" }) {
   return { version: 3, runId: "plan-run", mode: "plan", source, taskHash, changeName: "local-pilot", baseSha, branch: "main", phase: "complete", outcome: "success", approvedPlanHash: planHash, tools: tools() };
+}
+
+function githubReviewFixture() {
+  const snapshot = {
+    projectOwner: "acme",
+    projectNumber: 7,
+    itemId: "PVTI_1",
+    repository: "acme/shop",
+    number: 12,
+    title: "Pilot",
+    body: "Acceptance criteria:\n- The pilot works.",
+    url: "https://github.com/acme/shop/issues/12",
+    statusField: "Status",
+    statusValue: "Todo",
+    doneStatus: "Done",
+    reviewStatus: "Review",
+    blockedStatus: "Blocked",
+    currentStatus: "Todo",
+  };
+  const issueTask = createGitHubIssueTask(snapshot);
+  return {
+    snapshot,
+    issueTask,
+    source: issueTask.source,
+    parent: { ...planRecord(issueTask.source), taskHash: issueTask.hash, changeName: issueTask.changeName },
+  };
+}
+
+function passingReviewReport() {
+  return {
+    version: 1,
+    phase: "review",
+    summary: "All reviewed requirements pass.",
+    humanReviewRequired: false,
+    humanReviewReasons: [],
+    entries: [
+      { source: "issue", id: "issue:pilot-works", label: "The pilot works", result: "PASS", evidence: ["docs/pilot.md implements the request"], remainingWork: [] },
+      { source: "check", id: "check:git-diff-check", label: "git diff --check", result: "PASS", evidence: ["check passed"], remainingWork: [] },
+    ],
+  };
+}
+
+function freshReviewDependencies(setup, fixture, overrides = {}) {
+  const implementationPaths = [`openspec/changes/${fixture.parent.changeName}/tasks.md`, "docs/pilot.md"];
+  return {
+    ...setup.lifecycle,
+    preflightStatusSync: async () => ({
+      root: setup.root,
+      evidence: { kind: "plan", record: fixture.parent },
+      baseSha,
+      branch: "main",
+      issueTask: fixture.issueTask,
+      issueSnapshot: fixture.snapshot,
+      applyTestEnvironment: {},
+      applyTestEnvironmentError: null,
+    }),
+    collectReviewSnapshot: async () => ({ paths: implementationPaths, digest: "snapshot" }),
+    collectReviewChecks: async () => [{ source: "check", id: "check:git-diff-check", label: "git diff --check", result: "PASS", evidence: ["check passed"], remainingWork: [] }],
+    collectReviewInventory: async () => [{ source: "check", id: "check:git-diff-check", label: "git diff --check", expectedResult: "PASS" }],
+    createReviewContext: async () => ({ directory: "/tmp/review", issuePath: "/tmp/review/issue.md", checksPath: "/tmp/review/checks.json" }),
+    cleanupReviewContext: async () => {},
+    runReview: async () => passingReviewReport(),
+    assertReviewSnapshot: async () => {},
+    refreshIssue: async () => fixture.snapshot,
+    prepareStatus: async ({ target }) => ({ effectiveTarget: target, fallbackReason: null }),
+    updateStatus: async ({ target }) => ({ status: target === "done" ? "Done" : target === "review" ? "Review" : "Blocked" }),
+    ...overrides,
+  };
 }
 
 async function commonHarness() {
@@ -260,15 +329,15 @@ test("failed terminal status update remains pending for no-model retry", async (
 
 test("status sync retry invokes neither Codex nor patch application", async () => {
   const setup = await commonHarness();
-  const pending = { ...planRecord({ kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" }), mode: "apply", parentPlanRunId: "plan-run", statusSync: { state: "pending", target: "done", value: "Done" } };
+  const pending = { ...planRecord({ kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" }), mode: "apply", parentPlanRunId: "plan-run", statusSync: { state: "pending", target: "done", value: "Done", prepared: { projectId: "PVT_7", fieldId: "FIELD", itemId: "PVTI_1", optionId: "OPT_DONE", allowedCurrentStatuses: ["Todo", "Done"] } } };
   const targets = [];
   const result = await runLocalWorkflow({
     mode: "sync-status", changeName: "local-pilot", cwd: setup.root, io: memoryIo().io,
     dependencies: {
       ...setup.lifecycle,
       preflightStatusSync: async () => ({ root: setup.root, pendingRecord: pending }),
-      prepareStatus: async () => ({ prepared: true }),
-      updateStatus: async ({ target }) => { targets.push(target); return { status: "Done" }; },
+      prepareStatus: async () => { throw new Error("exact retry must not resolve Project metadata again"); },
+      updateStatus: async ({ target, prepared }) => { targets.push(target); assert.equal(prepared.optionIds.done, "OPT_DONE"); return { status: "Done" }; },
     },
   });
   assert.equal(result.projectStatus, "Done");
@@ -276,30 +345,32 @@ test("status sync retry invokes neither Codex nor patch application", async () =
   assert.deepEqual(setup.calls, []);
 });
 
-test("status sync verifies a manual OpenSpec completion before persisting and applying Done", async () => {
+test("status sync reviews the complete snapshot before persisting and applying Done", async () => {
   const setup = await commonHarness();
-  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
-  const parent = planRecord(source);
-  const implementationPaths = ["openspec/changes/local-pilot/tasks.md", "docs/pilot.md"];
+  const fixture = githubReviewFixture();
+  const implementationPaths = [`openspec/changes/${fixture.parent.changeName}/tasks.md`, "docs/pilot.md"];
   const order = [];
   const testUrl = "postgresql+psycopg://sentinel-user:sentinel-password@localhost:5432/stockx";
+  const baseDependencies = freshReviewDependencies(setup, fixture);
   const result = await runLocalWorkflow({
-    mode: "sync-status", changeName: "local-pilot", cwd: setup.root, io: memoryIo().io,
+    mode: "sync-status", changeName: fixture.parent.changeName, cwd: setup.root, io: memoryIo().io,
     dependencies: {
-      ...setup.lifecycle,
-      preflightStatusSync: async () => ({ root: setup.root, evidence: { kind: "plan", record: parent }, baseSha, branch: "main", applyTestEnvironment: { TEST_POSTGRES_DATABASE_URL: testUrl } }),
-      inspectCompletion: async () => { order.push("inspect"); return { baseSha, branch: "main", paths: implementationPaths }; },
-      validateImplementation: async (options) => {
-        order.push("validate");
-        assert.equal(options.requirePostgres, true);
+      ...baseDependencies,
+      preflightStatusSync: async () => ({ root: setup.root, evidence: { kind: "plan", record: fixture.parent }, baseSha, branch: "main", issueTask: fixture.issueTask, applyTestEnvironment: { TEST_POSTGRES_DATABASE_URL: testUrl }, applyTestEnvironmentError: null }),
+      collectReviewSnapshot: async () => { order.push("snapshot"); return { paths: implementationPaths, digest: "snapshot" }; },
+      collectReviewChecks: async (options) => {
+        order.push("checks");
         assert.equal(options.applyTestEnvironment.TEST_POSTGRES_DATABASE_URL, testUrl);
-        return ["git diff --check"];
+        return [{ source: "check", id: "check:git-diff-check", label: "git diff --check", result: "PASS", evidence: ["check passed"], remainingWork: [] }];
       },
+      runReview: async () => { order.push("review"); return passingReviewReport(); },
+      assertReviewSnapshot: async () => { order.push("recheck"); },
+      refreshIssue: async () => { order.push("issue-refresh"); return fixture.snapshot; },
       prepareStatus: async ({ source: preparedSource, target }) => {
         order.push("prepare");
         assert.equal(preparedSource.itemId, "PVTI_1");
         assert.equal(target, "done");
-        return { prepared: true };
+        return { effectiveTarget: "done", fallbackReason: null };
       },
       updateStatus: async ({ target }) => {
         order.push("update");
@@ -307,58 +378,122 @@ test("status sync verifies a manual OpenSpec completion before persisting and ap
         assert.deepEqual(setup.records.at(-1).statusSync, { state: "pending", target: "done", value: "Done" });
         return { status: "Done" };
       },
-      runStage: async () => { throw new Error("status sync must not invoke Codex"); },
       applyImplementationPatch: async () => { throw new Error("status sync must not apply a patch"); },
     },
   });
   assert.equal(result.projectStatus, "Done");
-  assert.equal(result.completionBasis, "verified-completion");
-  assert.deepEqual(order, ["inspect", "validate", "prepare", "update"]);
+  assert.equal(result.completionBasis, "reviewed-current-state");
+  assert.deepEqual(order, ["snapshot", "checks", "review", "recheck", "issue-refresh", "prepare", "update"]);
   assert.deepEqual(result.paths, implementationPaths);
   assert.equal(setup.records.at(-1).statusSync.state, "synchronized");
-  assert.equal(setup.records.at(-1).completionBasis, "verified-completion");
-  assert.deepEqual(setup.records.at(-1).verification, ["git diff --check"]);
+  assert.equal(setup.records.at(-1).completionBasis, "reviewed-current-state");
+  assert.deepEqual(setup.records.at(-1).verification, ["git diff --check: PASS"]);
+  assert.equal(setup.records.at(-1).derivedTarget, "done");
+  assert.equal(setup.records.at(-1).reviewReport.entries[0].result, "PASS");
   assert.doesNotMatch(JSON.stringify(setup.records), /sentinel-user|sentinel-password|TEST_POSTGRES_DATABASE_URL/);
   assert.deepEqual(setup.calls, []);
 });
 
-test("verified status sync records technical verification failure without preparing GitHub", async () => {
+test("status sync routes a failed requirement to Review", async () => {
   const setup = await commonHarness();
-  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
-  let remoteCalls = 0;
-  await assert.rejects(() => runLocalWorkflow({
-    mode: "sync-status", changeName: "local-pilot", cwd: setup.root, io: memoryIo().io,
-    dependencies: {
-      ...setup.lifecycle,
-      preflightStatusSync: async () => ({ root: setup.root, evidence: { kind: "plan", record: planRecord(source) }, baseSha, branch: "main", applyTestEnvironment: {} }),
-      inspectCompletion: async () => ({ baseSha, branch: "main", paths: ["openspec/changes/local-pilot/tasks.md", "docs/pilot.md"] }),
-      validateImplementation: async () => { throw new LocalRunError("TASK_INCOMPLETE", "tasks remain"); },
-      prepareStatus: async () => { remoteCalls += 1; },
-      updateStatus: async () => { remoteCalls += 1; },
-    },
-  }), (error) => error.code === "TASK_INCOMPLETE");
-  assert.equal(remoteCalls, 0);
-  assert.equal(setup.records.at(-1).outcome, "failure");
-  assert.equal(setup.records.at(-1).statusSync, null);
+  const fixture = githubReviewFixture();
+  const targets = [];
+  const failed = passingReviewReport();
+  failed.entries[0] = { ...failed.entries[0], result: "FAIL", remainingWork: ["Implement the missing behavior"] };
+  const result = await runLocalWorkflow({
+    mode: "sync-status", changeName: fixture.parent.changeName, cwd: setup.root, io: memoryIo().io,
+    dependencies: freshReviewDependencies(setup, fixture, {
+      runReview: async () => failed,
+      prepareStatus: async ({ target }) => { targets.push(`prepare:${target}`); return { effectiveTarget: target, fallbackReason: null }; },
+      updateStatus: async ({ target }) => { targets.push(`update:${target}`); return { status: "Review" }; },
+    }),
+  });
+  assert.equal(result.projectStatus, "Review");
+  assert.equal(result.derivedTarget, "review");
+  assert.deepEqual(targets, ["prepare:review", "update:review"]);
 });
 
-test("verified status sync leaves one pending Done transition when GitHub update fails", async () => {
+test("reviewed status sync leaves one exact pending transition when GitHub update fails", async () => {
   const setup = await commonHarness();
-  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
+  const fixture = githubReviewFixture();
   await assert.rejects(() => runLocalWorkflow({
-    mode: "sync-status", changeName: "local-pilot", cwd: setup.root, io: memoryIo().io,
-    dependencies: {
-      ...setup.lifecycle,
-      preflightStatusSync: async () => ({ root: setup.root, evidence: { kind: "plan", record: planRecord(source) }, baseSha, branch: "main", applyTestEnvironment: {} }),
-      inspectCompletion: async () => ({ baseSha, branch: "main", paths: ["openspec/changes/local-pilot/tasks.md", "docs/pilot.md"] }),
-      validateImplementation: async () => ["git diff --check"],
-      prepareStatus: async () => ({ prepared: true }),
+    mode: "sync-status", changeName: fixture.parent.changeName, cwd: setup.root, io: memoryIo().io,
+    dependencies: freshReviewDependencies(setup, fixture, {
       updateStatus: async () => { throw new LocalRunError("STATUS_SYNC_FAILED", "offline"); },
-    },
-  }), (error) => error.code === "STATUS_SYNC_FAILED" && /--sync-status local-pilot/.test(error.message));
+    }),
+  }), (error) => error.code === "STATUS_SYNC_FAILED" && error.message.includes(`--sync-status ${fixture.parent.changeName}`));
   const final = setup.records.at(-1);
   assert.equal(final.outcome, "failure");
   assert.deepEqual(final.statusSync, { state: "pending", target: "done", value: "Done" });
+});
+
+test("unavailable semantic review derives Blocked and records Review fallback", async () => {
+  const setup = await commonHarness();
+  const fixture = githubReviewFixture();
+  const result = await runLocalWorkflow({
+    mode: "sync-status",
+    changeName: fixture.parent.changeName,
+    cwd: setup.root,
+    io: memoryIo().io,
+    dependencies: freshReviewDependencies(setup, fixture, {
+      runReview: async () => { throw new LocalRunError("COMMAND_START", "raw issue body must not leak"); },
+      prepareStatus: async ({ target, allowReviewFallback }) => {
+        assert.equal(target, "blocked");
+        assert.equal(allowReviewFallback, true);
+        return { effectiveTarget: "review", fallbackReason: "Status has no unique Blocked option; using Review" };
+      },
+      updateStatus: async ({ target }) => {
+        assert.equal(target, "review");
+        assert.deepEqual(setup.records.at(-1).statusSync, { state: "pending", target: "review", value: "Review" });
+        return { status: "Review" };
+      },
+    }),
+  });
+  assert.equal(result.derivedTarget, "blocked");
+  assert.equal(result.effectiveTarget, "review");
+  assert.match(result.fallbackReason, /using Review/);
+  assert.doesNotMatch(JSON.stringify(setup.records), /raw issue body must not leak/);
+});
+
+test("snapshot mutation stops before Project preparation or mutation", async () => {
+  const setup = await commonHarness();
+  const fixture = githubReviewFixture();
+  let remoteCalls = 0;
+  await assert.rejects(() => runLocalWorkflow({
+    mode: "sync-status",
+    changeName: fixture.parent.changeName,
+    cwd: setup.root,
+    io: memoryIo().io,
+    dependencies: freshReviewDependencies(setup, fixture, {
+      assertReviewSnapshot: async () => { throw new LocalRunError("REVIEW_STALE", "checkout changed"); },
+      prepareStatus: async () => { remoteCalls += 1; },
+      updateStatus: async () => { remoteCalls += 1; },
+    }),
+  }), (error) => error.code === "REVIEW_STALE");
+  assert.equal(remoteCalls, 0);
+  assert.equal(setup.records.at(-1).statusSync, null);
+});
+
+test("provenance failure performs no checks, review, pending intent, or Project mutation", async () => {
+  const setup = await commonHarness();
+  const calls = [];
+  await assert.rejects(() => runLocalWorkflow({
+    mode: "sync-status",
+    changeName: "local-pilot",
+    cwd: setup.root,
+    io: memoryIo().io,
+    dependencies: {
+      ...setup.lifecycle,
+      preflightStatusSync: async () => { throw new LocalRunError("BASE_ANCESTRY", "base is not an ancestor"); },
+      collectReviewSnapshot: async () => { calls.push("snapshot"); },
+      collectReviewChecks: async () => { calls.push("checks"); },
+      runReview: async () => { calls.push("review"); },
+      prepareStatus: async () => { calls.push("prepare"); },
+      updateStatus: async () => { calls.push("update"); },
+    },
+  }), (error) => error.code === "BASE_ANCESTRY");
+  assert.deepEqual(calls, []);
+  assert.equal(setup.records.length, 0);
 });
 
 test("already synchronized status is idempotent and skips checkout verification and GitHub", async () => {
@@ -381,44 +516,19 @@ test("already synchronized status is idempotent and skips checkout verification 
   assert.equal(result.completionBasis, "synchronized-result");
 });
 
-test("offline GitHub-plan fixture reaches Done after manual completion despite failed apply history", async () => {
-  const root = await initRepository();
-  const source = { kind: "github-issue", projectOwner: "acme", projectNumber: 7, repository: "acme/shop", issueNumber: 12, url: "https://github.com/acme/shop/issues/12", itemId: "PVTI_1", statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked" };
-  const parent = planRecord(source);
-  await writeRunRecord(root, parent);
-  await writeRunRecord(root, { ...parent, runId: "failed-apply", mode: "apply", parentPlanRunId: parent.runId, phase: "validation", outcome: "failure", error: "technical failure" });
-  const changeRoot = path.join(root, "openspec", "changes", "local-pilot");
-  await mkdir(path.join(changeRoot, "specs", "pilot"), { recursive: true });
-  await writeFile(path.join(changeRoot, ".openspec.yaml"), "schema: spec-driven\n");
-  await writeFile(path.join(changeRoot, "proposal.md"), "# Proposal\n");
-  await writeFile(path.join(changeRoot, "design.md"), "# Design\n");
-  await writeFile(path.join(changeRoot, "tasks.md"), "- [x] implement\n");
-  await writeFile(path.join(changeRoot, "specs", "pilot", "spec.md"), "## Purpose\nPilot.\n");
-  await mkdir(path.join(root, "docs"));
-  await writeFile(path.join(root, "docs", "pilot.md"), "implemented\n");
-
-  const order = [];
+test("fresh review reaches Done despite unrelated failed apply history", async () => {
+  const setup = await commonHarness();
+  const fixture = githubReviewFixture();
   const result = await runLocalWorkflow({
-    mode: "sync-status", changeName: "local-pilot", cwd: root, io: memoryIo().io,
-    dependencies: {
-      validateImplementation: async ({ paths }) => {
-        order.push("validate");
-        assert.ok(paths.includes("openspec/changes/local-pilot/tasks.md"));
-        assert.ok(paths.includes("docs/pilot.md"));
-        return ["git diff --check"];
-      },
-      prepareStatus: async ({ source: recorded, target }) => {
-        order.push("prepare");
-        assert.equal(recorded.itemId, source.itemId);
-        assert.equal(target, "done");
-        return { prepared: true };
-      },
-      updateStatus: async () => { order.push("update"); return { status: "Done" }; },
-    },
+    mode: "sync-status",
+    changeName: fixture.parent.changeName,
+    cwd: setup.root,
+    io: memoryIo().io,
+    dependencies: freshReviewDependencies(setup, fixture),
   });
   assert.equal(result.projectStatus, "Done");
-  assert.equal(result.completionBasis, "verified-completion");
-  assert.deepEqual(order, ["validate", "prepare", "update"]);
+  assert.equal(result.completionBasis, "reviewed-current-state");
+  assert.equal(result.report.entries.every((entry) => entry.result === "PASS"), true);
 });
 
 test("ambiguous status evidence records a technical refusal and never calls GitHub", async () => {

@@ -1,14 +1,26 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { copyApprovedPlan, hashApprovedPlan, inspectCompletedImplementationCheckout, listApprovedPlanPaths } from "./approved-plan.mjs";
+import { copyApprovedPlan, hashApprovedPlan, listApprovedPlanPaths } from "./approved-plan.mjs";
 import { LocalRunError, asLocalError, sanitizeText } from "./errors.mjs";
-import { prepareProjectStatus, updateProjectStatus } from "./github-project.mjs";
+import { prepareProjectStatus, refreshRecordedIssue, restorePreparedProjectStatus, serializePreparedProjectStatus, updateProjectStatus } from "./github-project.mjs";
 import { formatApplySuccess, formatBlocked, formatPlanReady, formatStatusSync } from "./output.mjs";
 import { preflight, preflightApply, preflightStatusSync } from "./preflight.mjs";
+import {
+  assertReviewSnapshotUnchanged,
+  blockedReviewReport,
+  cleanupReviewContext,
+  collectRequiredReviewInventory,
+  collectReviewChecks,
+  collectReviewSnapshot,
+  createReviewContext,
+  deriveReviewTarget,
+  sanitizeReviewReport,
+  validateReviewReport,
+} from "./review.mjs";
 import { createRunId, initialLinkedRunRecord, initialRunRecord, updateRunRecord, writeRunRecord } from "./run-record.mjs";
 import { runCodexStage } from "./codex.mjs";
-import { taskLabel } from "./task.mjs";
+import { createGitHubIssueTask, taskLabel } from "./task.mjs";
 import { cleanupIsolatedWorktree, createIsolatedWorktree } from "./worktree.mjs";
 import { applyImplementationPatch, applyValidatedPatch, captureBinaryDiff, captureIndexDiff, validateImplementation, validatePlan } from "./validation.mjs";
 
@@ -23,7 +35,15 @@ function sourceLabel(source) {
 }
 
 function statusValue(source, target) {
-  return target === "done" ? source.doneStatus || "Done" : source.blockedStatus || "Blocked";
+  if (target === "done") return source.doneStatus || "Done";
+  if (target === "review") return source.reviewStatus || "Review";
+  return source.blockedStatus || "Blocked";
+}
+
+function pendingStatus(source, target, prepared) {
+  const status = { state: "pending", target, value: statusValue(source, target) };
+  const intent = serializePreparedProjectStatus(prepared, target);
+  return intent ? { ...status, prepared: intent } : status;
 }
 
 async function runPlanWorkflow(options) {
@@ -157,12 +177,11 @@ async function runApplyWorkflow(options) {
   let ownedWorktree;
   const synchronize = async (target) => {
     if (!preparedStatus) return null;
-    const value = statusValue(context.planRecord.source, target);
-    record = updateRunRecord(record, { phase: "status-sync", statusSync: { state: "pending", target, value } }, now());
+    record = updateRunRecord(record, { phase: "status-sync", statusSync: pendingStatus(context.planRecord.source, target, preparedStatus) }, now());
     recordPath = await recordWriter(context.root, record);
     try {
       const result = await updateStatusFn({ root: context.root, prepared: preparedStatus, target, signal });
-      record = updateRunRecord(record, { statusSync: { state: "synchronized", target, value: result.status } }, now());
+      record = updateRunRecord(record, { statusSync: { ...record.statusSync, state: "synchronized", value: result.status } }, now());
       recordPath = await recordWriter(context.root, record);
       return result.status;
     } catch (error) {
@@ -248,17 +267,24 @@ async function runApplyWorkflow(options) {
 async function runStatusSyncWorkflow(options) {
   const { cwd, changeName, io, signal, now, dependencies } = options;
   const preflightFn = dependencies.preflightStatusSync || preflightStatusSync;
-  const inspectCompletionFn = dependencies.inspectCompletion || inspectCompletedImplementationCheckout;
-  const validateImplementationFn = dependencies.validateImplementation || validateImplementation;
+  const collectSnapshotFn = dependencies.collectReviewSnapshot || collectReviewSnapshot;
+  const collectChecksFn = dependencies.collectReviewChecks || collectReviewChecks;
+  const collectInventoryFn = dependencies.collectReviewInventory || collectRequiredReviewInventory;
+  const createReviewContextFn = dependencies.createReviewContext || createReviewContext;
+  const cleanupReviewContextFn = dependencies.cleanupReviewContext || cleanupReviewContext;
+  const reviewStageFn = dependencies.runReview || dependencies.runStage || runCodexStage;
+  const validateReviewFn = dependencies.validateReviewReport || validateReviewReport;
+  const assertSnapshotFn = dependencies.assertReviewSnapshot || assertReviewSnapshotUnchanged;
+  const refreshIssueFn = dependencies.refreshIssue || refreshRecordedIssue;
   const prepareStatusFn = dependencies.prepareStatus || prepareProjectStatus;
   const updateStatusFn = dependencies.updateStatus || updateProjectStatus;
   const recordWriter = dependencies.writeRecord || writeRunRecord;
   io.phase("status-sync", `resolving retry or verified completion for ${changeName}`);
-  const context = await preflightFn({ cwd, changeName });
+  const context = await preflightFn({ cwd, changeName, signal });
   const evidence = context.evidence || (context.pendingRecord ? { kind: "pending", record: context.pendingRecord } : context.diagnosticRecord ? { kind: "refusal", record: context.diagnosticRecord } : null);
   if (!evidence?.record) throw new LocalRunError("STATUS_SYNC_EVIDENCE", "Status-sync preflight returned no usable evidence");
   const parent = evidence.record;
-  const completionBasis = evidence.kind === "plan" ? "verified-completion" : evidence.kind === "pending" ? "pending-retry" : evidence.kind === "synchronized" ? "synchronized-result" : "refused-evidence";
+  const completionBasis = evidence.kind === "plan" ? "reviewed-current-state" : evidence.kind === "pending" ? "pending-retry" : evidence.kind === "synchronized" ? "synchronized-result" : "refused-evidence";
   const runId = createRunId(now(), parent.taskHash);
   let record = initialLinkedRunRecord({
     runId,
@@ -275,51 +301,176 @@ async function runStatusSyncWorkflow(options) {
   try {
     if (context.refusal) throw context.refusal;
     if (evidence.kind === "synchronized") {
-      record = updateRunRecord(record, { phase: "complete", outcome: "success", statusSync: { ...parent.statusSync } }, now());
+      record = updateRunRecord(record, {
+        phase: "complete",
+        outcome: "success",
+        changedPaths: parent.changedPaths || [],
+        verification: parent.verification || [],
+        reviewReport: parent.reviewReport || null,
+        derivedTarget: parent.derivedTarget || parent.statusSync.target,
+        effectiveTarget: parent.effectiveTarget || parent.statusSync.target,
+        fallbackReason: parent.fallbackReason || null,
+        statusSync: { ...parent.statusSync },
+      }, now());
       recordPath = await recordWriter(context.root, record);
-      io.info(formatStatusSync({ changeName, status: parent.statusSync.value, recordPath, completionBasis }));
+      io.info(formatStatusSync({
+        changeName,
+        status: parent.statusSync.value,
+        recordPath,
+        completionBasis,
+        verification: parent.verification || [],
+        report: parent.reviewReport || null,
+        derivedTarget: parent.derivedTarget || null,
+        effectiveTarget: parent.effectiveTarget || null,
+        fallbackReason: parent.fallbackReason || null,
+      }));
       return { outcome: "success", mode: "sync-status", recordPath, projectStatus: parent.statusSync.value, completionBasis };
     }
 
     if (evidence.kind === "pending") {
-      const prepared = await prepareStatusFn({ root: context.root, source: parent.source, target: parent.statusSync.target, signal });
+      const prepared = parent.statusSync.prepared
+        ? restorePreparedProjectStatus(parent.source, parent.statusSync.target, parent.statusSync.prepared)
+        : await prepareStatusFn({ root: context.root, source: parent.source, target: parent.statusSync.target, allowReviewStates: true, allowBlockedCurrent: true, signal });
       const result = await updateStatusFn({ root: context.root, prepared, target: parent.statusSync.target, signal });
       const completedPending = updateRunRecord(parent, { statusSync: { ...parent.statusSync, state: "synchronized", value: result.status } }, now());
       await recordWriter(context.root, completedPending);
-      record = updateRunRecord(record, { phase: "complete", outcome: "success", statusSync: { state: "synchronized", target: parent.statusSync.target, value: result.status } }, now());
+      record = updateRunRecord(record, {
+        phase: "complete",
+        outcome: "success",
+        changedPaths: parent.changedPaths || [],
+        verification: parent.verification || [],
+        reviewReport: parent.reviewReport || null,
+        derivedTarget: parent.derivedTarget || parent.statusSync.target,
+        effectiveTarget: parent.effectiveTarget || parent.statusSync.target,
+        fallbackReason: parent.fallbackReason || null,
+        statusSync: { ...parent.statusSync, state: "synchronized", value: result.status },
+      }, now());
       recordPath = await recordWriter(context.root, record);
-      io.info(formatStatusSync({ changeName, status: result.status, recordPath, completionBasis }));
+      io.info(formatStatusSync({
+        changeName,
+        status: result.status,
+        recordPath,
+        completionBasis,
+        verification: parent.verification || [],
+        report: parent.reviewReport || null,
+        derivedTarget: parent.derivedTarget || parent.statusSync.target,
+        effectiveTarget: parent.effectiveTarget || parent.statusSync.target,
+        fallbackReason: parent.fallbackReason || null,
+      }));
       return { outcome: "success", mode: "sync-status", recordPath, projectStatus: result.status, completionBasis };
     }
 
     if (evidence.kind !== "plan") throw new LocalRunError("STATUS_SYNC_EVIDENCE", "Status-sync evidence kind is unsupported");
-    io.phase("validation", "verifying the completed unstaged implementation");
-    record = updateRunRecord(record, { phase: "validation" }, now());
+    io.phase("review-snapshot", "capturing committed and uncommitted changes from the recorded base");
+    record = updateRunRecord(record, { phase: "review-snapshot" }, now());
     recordPath = await recordWriter(context.root, record);
-    const checkout = await inspectCompletionFn(context.root);
-    record = updateRunRecord(record, { baseSha: checkout.baseSha, branch: checkout.branch }, now());
+    const snapshotOptions = {
+      root: context.root,
+      baseSha: parent.baseSha,
+      branch: parent.branch,
+      changeName,
+      approvedPlanHash: parent.approvedPlanHash,
+      issueTaskHash: context.issueTask.hash,
+    };
+    const snapshot = await collectSnapshotFn(snapshotOptions);
+
+    io.phase("verification", "running strict OpenSpec and trusted path-selected checks");
+    record = updateRunRecord(record, { phase: "verification", changedPaths: snapshot.paths }, now());
     recordPath = await recordWriter(context.root, record);
-    const verification = await validateImplementationFn({
+    const checks = await collectChecksFn({
       root: context.root,
       dependencyRoot: context.root,
       changeName,
-      paths: checkout.paths,
-      approvedPlanHash: parent.approvedPlanHash,
+      paths: snapshot.paths,
+      baseSha: parent.baseSha,
       applyTestEnvironment: context.applyTestEnvironment,
-      requirePostgres: true,
+      applyTestEnvironmentError: context.applyTestEnvironmentError,
     });
-    record = updateRunRecord(record, { changedPaths: checkout.paths, verification }, now());
-    recordPath = await recordWriter(context.root, record);
+    const inventory = await collectInventoryFn({ root: context.root, changeName, checks });
+    const verification = checks.map((check) => `${check.label}: ${check.result}`);
 
-    const prepared = await prepareStatusFn({ root: context.root, source: parent.source, target: "done", signal });
-    const pending = { state: "pending", target: "done", value: statusValue(parent.source, "done") };
-    record = updateRunRecord(record, { phase: "status-sync", statusSync: pending }, now());
+    io.phase("review", "evaluating issue acceptance criteria and approved OpenSpec requirements");
+    record = updateRunRecord(record, { phase: "review", verification }, now());
     recordPath = await recordWriter(context.root, record);
-    const result = await updateStatusFn({ root: context.root, prepared, target: "done", signal });
+    let reviewContext;
+    let report;
+    try {
+      reviewContext = await createReviewContextFn({
+        root: context.root,
+        runId,
+        issueTaskBody: context.issueTask.body,
+        checks,
+        baseSha: parent.baseSha,
+        changeName,
+      });
+      try {
+        const candidate = await reviewStageFn({
+          root: context.root,
+          worktree: context.root,
+          phase: "review",
+          changeName,
+          reviewContext,
+          reviewInventory: inventory,
+          baseSha: parent.baseSha,
+          signal,
+        });
+        report = validateReviewFn(candidate, inventory);
+      } catch (error) {
+        const localError = asLocalError(error);
+        report = validateReviewFn(blockedReviewReport(`${localError.code}: semantic review could not complete`, inventory), inventory);
+      }
+      report = sanitizeReviewReport(report);
+      await assertSnapshotFn(snapshot, snapshotOptions);
+      const currentIssue = await refreshIssueFn({ root: context.root, source: parent.source, signal });
+      const currentTask = createGitHubIssueTask(currentIssue);
+      if (currentTask.hash !== parent.taskHash || currentTask.changeName !== changeName) {
+        throw new LocalRunError("TASK_IDENTITY", "Linked GitHub issue changed during review");
+      }
+    } finally {
+      if (reviewContext) await cleanupReviewContextFn(reviewContext).catch((error) => io.error(`Cleanup warning: ${sanitizeText(error.message)}`));
+    }
+
+    const derivedTarget = deriveReviewTarget(report);
+    const prepared = await prepareStatusFn({
+      root: context.root,
+      source: parent.source,
+      target: derivedTarget,
+      allowReviewFallback: derivedTarget === "blocked",
+      allowReviewStates: true,
+      allowBlockedCurrent: derivedTarget === "blocked" || Boolean(evidence.allowBlockedCurrent),
+      signal,
+    });
+    const effectiveTarget = prepared.effectiveTarget || derivedTarget;
+    const fallbackReason = prepared.fallbackReason ? sanitizeText(prepared.fallbackReason) : null;
+    const pending = pendingStatus(parent.source, effectiveTarget, prepared);
+    record = updateRunRecord(record, {
+      phase: "status-sync",
+      changedPaths: snapshot.paths,
+      verification,
+      reviewReport: report,
+      derivedTarget,
+      effectiveTarget,
+      fallbackReason,
+      statusSync: pending,
+    }, now());
+    recordPath = await recordWriter(context.root, record);
+    const result = await updateStatusFn({ root: context.root, prepared, target: effectiveTarget, signal });
     record = updateRunRecord(record, { phase: "complete", outcome: "success", statusSync: { ...pending, state: "synchronized", value: result.status } }, now());
     recordPath = await recordWriter(context.root, record);
-    io.info(formatStatusSync({ changeName, status: result.status, recordPath, completionBasis, verification }));
-    return { outcome: "success", mode: "sync-status", recordPath, paths: checkout.paths, verification, projectStatus: result.status, completionBasis };
+    io.info(formatStatusSync({ changeName, status: result.status, recordPath, completionBasis, verification, report, derivedTarget, effectiveTarget, fallbackReason }));
+    return {
+      outcome: "success",
+      mode: "sync-status",
+      recordPath,
+      paths: snapshot.paths,
+      verification,
+      report,
+      derivedTarget,
+      effectiveTarget,
+      fallbackReason,
+      projectStatus: result.status,
+      completionBasis,
+    };
   } catch (error) {
     const localError = asLocalError(error, "STATUS_SYNC_FAILED");
     record = updateRunRecord(record, { outcome: "failure", error: `${localError.code}: ${localError.message}` }, now());

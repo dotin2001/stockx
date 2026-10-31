@@ -1,6 +1,7 @@
 # Local AI OpenSpec Runner
 
-`ai:local` is a two-stage, human-approved delivery flow:
+`ai:local` is a human-approved plan/apply flow with an optional reviewed status
+sync:
 
 ```text
 Todo issue or Markdown task
@@ -10,7 +11,8 @@ Todo issue or Markdown task
   -> explicit --apply approval
   -> isolated implementation and verification
   -> local unstaged implementation
-  -> selected Project item becomes Done or Blocked
+  -> read-only base-to-current review with PASS/FAIL/BLOCKED evidence
+  -> selected Project item becomes Done, Review, or Blocked
 ```
 
 Planning and implementation are different commands and different Codex
@@ -142,11 +144,13 @@ npm run ai:local -- \
   --status-field Workflow \
   --status-value Ready \
   --done-status Complete \
+  --review-status 'Needs review' \
   --blocked-status Blocked \
   --issue 'OWNER/REPOSITORY#123'
 ```
 
-The source, done, and blocked values must be distinct and are matched exactly.
+The source, done, review, and blocked values must be distinct and are matched
+exactly.
 
 ### Plan from a Markdown task
 
@@ -278,25 +282,45 @@ The database variable is required when the implementation changes `apps/api/`
 or `infra/`. It is forwarded only to trusted verification commands and is not
 stored in run records.
 
-When no pending transition exists, status sync finds the unique successful
-GitHub-backed plan and independently verifies the current checkout. The branch
-must be attached, all implementation changes must be unstaged, the delta must
-include the selected change's completed `tasks.md` plus at least one non-plan
-path, the approved plan must be unchanged apart from task checkbox markers,
-and strict OpenSpec validation plus every path-selected trusted check must pass.
-A successful `npm run ai:local -- --apply` record is not required. Earlier
-technical apply failures neither authorize nor prevent this verification.
+When no pending transition exists, status sync performs this workflow:
 
-Status sync never invokes Codex, stages or applies a patch, creates a commit,
-pushes code, publishes artifacts, or edits/closes the issue. Its only remote
-mutation is the recorded Project item's recorded Status field.
+1. Read the unique successful GitHub-backed plan record and verify the exact
+   linked Project item, issue URL/repository/number, unchanged canonical issue
+   content hash, attached branch, recorded base commit, and base ancestry.
+2. Capture one stable read-only diff from the recorded base through the current
+   working tree. This includes later commits, staged and unstaged changes,
+   deletions, and safe regular untracked files without changing the Git index.
+3. Validate the implementation against every linked-issue acceptance criterion.
+4. Check alignment with the approved OpenSpec proposal, specification
+   requirements/scenarios, design constraints, and every task marker.
+5. Run strict OpenSpec validation and the trusted checks selected from the full
+   base-to-current path set. A passing check is `PASS`, an executed failing check
+   is `FAIL`, and a check that cannot run is `BLOCKED`.
+6. Generate and locally record a bounded per-requirement report with result,
+   supporting evidence, remaining work, human-review reasons, and check names.
+7. Re-verify the unchanged snapshot and issue, then update only the recorded
+   Project status field: `Done` for all PASS with no human review, `Review` for
+   any FAIL or human-review need, or `Blocked` for failure-free unavailable
+   verification. If the configured Blocked option is absent or ambiguous, use
+   Review and record the fallback reason.
+
+The review Codex process is ephemeral, uses the pinned model and a read-only
+sandbox, receives no GitHub credentials or apply-only database value, and cannot
+choose the status. The host derives the target. Status sync never stages or
+applies a patch, creates a commit, checks out or resets code, pushes, publishes,
+or comments on, edits, labels, assigns, or closes the issue. Its only remote
+mutation is the exact recorded Project item's exact recorded Status field.
+
+A missing, changed, ambiguous, or inaccessible issue; detached or different
+branch; missing base; or non-ancestor/rebased history is a provenance error.
+The command stops without running review/checks or changing Project status.
 
 ## Status-sync recovery
 
-Local verification and a remote Project update cannot be atomic. If the
-Project update fails after verification, the run record keeps one pending
-allowlisted `Done` transition. Retry only that transition without rerunning
-Codex or the expensive local checks:
+Local review and a remote Project update cannot be atomic. If the Project
+update fails after review, the run record keeps one pending allowlisted `Done`,
+`Review`, or `Blocked` transition. Retry only that exact recorded item, field,
+and option without re-reading the issue, invoking Codex, or rerunning checks:
 
 ```bash
 npm run ai:local -- --sync-status <change-name>
@@ -305,13 +329,16 @@ npm run ai:local -- --sync-status <change-name>
 The retry is idempotent: if GitHub accepted the earlier update but the local
 process failed before recording it, synchronization succeeds without changing
 anything else. A unique pending transition always takes priority over current
-checkout verification. An already synchronized terminal result is returned
-without rerunning verification. Ambiguous evidence is rejected.
+checkout review. An already synchronized Done result is returned without
+rerunning review. Synchronized Review and review-produced Blocked results are
+deliberately nonterminal: after fixes, new commits, or restored prerequisites,
+the same command performs a fresh provenance check and review and can advance
+to Done. Ambiguous pending evidence is rejected.
 
-If local verification fails, fix the reported checkout, plan, task, test, or
-database configuration problem and run the same `--sync-status` command again.
-No pending `Done` transition is created and the Project status remains
-unchanged.
+If requirements fail, fix the reported remaining work and rerun status sync
+from Review. If verification is unavailable, restore the prerequisite and rerun
+from Blocked (or its Review fallback). A stable valid report is persisted before
+the one allowed Project mutation.
 
 ## Security boundary
 
@@ -320,17 +347,21 @@ model, prompts, schema, sandbox, credentials, commands, protected paths, or
 publication policy. During apply, only the human-reviewed OpenSpec artifacts are
 task context.
 
-Both Codex stages use an ephemeral session, ignored user configuration,
-`gpt-5.6-sol`, and the `workspace-write` sandbox. Codex receives no GitHub
-credentials. The host runner's only GitHub mutation is the exact selected
-Project item's recorded single-select status field.
+All Codex stages use an ephemeral session, ignored user configuration, and the
+pinned `gpt-5.6-sol` model. Plan and apply use `workspace-write` only inside
+owned temporary worktrees; status review uses `read-only` in the checkout.
+Codex receives no GitHub credentials. The host runner's only GitHub mutation is
+the exact selected Project item's recorded single-select status field. The runner
+never edits/closes the issue.
 
 ## Run records
 
 Ignored version 3 records live under `.ai-local/runs/`. They contain allowlisted
 source identity, mode, task and plan hashes, base commit, phases, outcomes,
-changed paths, verification names, parent plan identity, completion basis, and
-pending or completed status synchronization.
+changed paths, verification names/results, bounded sanitized per-requirement
+review entries, human-review reasons, derived/effective status and fallback,
+parent plan identity, completion basis, and pending or completed status
+synchronization.
 
 They exclude task and issue bodies, titles, prompts, raw model transcripts, raw
 GitHub responses, environment dumps, and credentials.
@@ -366,5 +397,5 @@ runner.
 
 ```bash
 npm run ai:local:test
-openspec validate split-ai-local-plan-apply --strict
+openspec validate add-ai-code-review-status-sync --strict
 ```

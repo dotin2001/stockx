@@ -6,10 +6,10 @@ import path from "node:path";
 import { resolveApplyTestEnvironment } from "./apply-environment.mjs";
 import { assertLocal, LocalRunError } from "./errors.mjs";
 import { hashApprovedPlan, inspectApprovedPlanCheckout } from "./approved-plan.mjs";
-import { loadGitHubProjectTask } from "./github-project.mjs";
+import { loadGitHubProjectTask, refreshRecordedIssue } from "./github-project.mjs";
 import { runProcess } from "./process.mjs";
 import { findStatusSyncDiagnosticRecord, findStatusSyncEvidence, findSuccessfulPlanRecord } from "./run-record.mjs";
-import { resolveTaskFile } from "./task.mjs";
+import { createGitHubIssueTask, resolveTaskFile } from "./task.mjs";
 import { validatePlan } from "./validation.mjs";
 import { findOwnedStaleWorktrees } from "./worktree.mjs";
 
@@ -147,7 +147,7 @@ export async function preflightApply({ cwd = process.cwd(), changeName, commandR
   }
 }
 
-export async function preflightStatusSync({ cwd = process.cwd(), changeName, commandRunner = runProcess, env = process.env }) {
+export async function preflightStatusSync({ cwd = process.cwd(), changeName, commandRunner = runProcess, env = process.env, issueRefresher = refreshRecordedIssue, signal }) {
   try {
     const root = await discoverRepository(cwd, commandRunner);
     let evidence;
@@ -161,10 +161,52 @@ export async function preflightStatusSync({ cwd = process.cwd(), changeName, com
       throw error;
     }
     if (evidence.kind !== "plan") return { root, evidence };
+    const planRecord = evidence.record;
+    assertLocal(planRecord.source?.kind === "github-issue", "STATUS_SYNC_SOURCE", "Status sync review requires a GitHub-backed plan");
+    const issueSnapshot = await issueRefresher({ root, source: planRecord.source, commandRunner, signal });
+    const issueTask = createGitHubIssueTask(issueSnapshot);
+    assertLocal(issueTask.hash === planRecord.taskHash && issueTask.changeName === changeName, "TASK_IDENTITY", "Linked GitHub issue changed after the reviewed plan was created");
+    const allowedStatuses = new Set([planRecord.source.statusValue || "Todo", planRecord.source.reviewStatus || "Review"]);
+    if (evidence.allowBlockedCurrent) allowedStatuses.add(planRecord.source.blockedStatus || "Blocked");
+    assertLocal(allowedStatuses.has(issueSnapshot.currentStatus), "GITHUB_ISSUE_STALE", `Recorded item has unexpected ${planRecord.source.statusField || "Status"} value ${issueSnapshot.currentStatus}`);
+    let branchResult;
+    try {
+      branchResult = await commandRunner("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root });
+    } catch {
+      throw new LocalRunError("BRANCH_DETACHED", "Status sync review requires the recorded attached Git branch");
+    }
+    const branch = branchResult.stdout.trim();
+    assertLocal(branch === planRecord.branch, "BRANCH_IDENTITY", `Current branch ${branch} does not match recorded branch ${planRecord.branch}`);
+    let baseResult;
+    try {
+      baseResult = await commandRunner("git", ["rev-parse", "--verify", `${planRecord.baseSha}^{commit}`], { cwd: root });
+    } catch {
+      throw new LocalRunError("BASE_COMMIT", "Recorded base commit is missing or invalid");
+    }
+    assertLocal(baseResult.stdout.trim() === planRecord.baseSha, "BASE_COMMIT", "Recorded base commit did not resolve exactly");
+    const headResult = await commandRunner("git", ["rev-parse", "HEAD"], { cwd: root });
+    try {
+      await commandRunner("git", ["merge-base", "--is-ancestor", planRecord.baseSha, headResult.stdout.trim()], { cwd: root });
+    } catch {
+      throw new LocalRunError("BASE_ANCESTRY", "Recorded base commit is not an ancestor of current HEAD");
+    }
+    let applyTestEnvironment = {};
+    let applyTestEnvironmentError = null;
+    try {
+      applyTestEnvironment = resolveApplyTestEnvironment(env);
+    } catch (error) {
+      applyTestEnvironmentError = error;
+    }
     return {
       root,
       evidence,
-      applyTestEnvironment: resolveApplyTestEnvironment(env),
+      issueSnapshot,
+      issueTask,
+      branch,
+      baseSha: planRecord.baseSha,
+      headSha: headResult.stdout.trim(),
+      applyTestEnvironment,
+      applyTestEnvironmentError,
     };
   } catch (error) {
     if (error instanceof LocalRunError) throw error;

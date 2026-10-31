@@ -4,7 +4,7 @@ import { assertLocal, LocalRunError } from "./errors.mjs";
 
 export const USAGE = `Usage:
   npm run ai:local -- --task <repository-relative.md> [--dry-run]
-  npm run ai:local -- --project-owner <login> --project-number <number> [--status-field Status] [--status-value Todo] [--done-status Done] [--blocked-status Blocked] [--issue <owner/repo#number>] [--dry-run]
+  npm run ai:local -- --project-owner <login> --project-number <number> [--status-field Status] [--status-value Todo] [--done-status Done] [--review-status Review] [--blocked-status Blocked] [--issue <owner/repo#number>] [--dry-run]
   npm run ai:local -- --apply <change-name> [--dry-run]
   npm run ai:local -- --sync-status <change-name>
 
@@ -12,13 +12,15 @@ Task and Project intake create and validate an OpenSpec plan, leave only that
 plan unstaged for review, and stop. --apply explicitly approves one reviewed
 plan and runs implementation. For a GitHub-backed plan, a successful apply
 moves only the selected Project item to Done and a structured task blocker
-moves it to Blocked. --sync-status first retries a recorded pending update;
-otherwise it verifies a completed unstaged $openspec-apply-change implementation
-against its successful GitHub-backed plan and moves the recorded item to Done.`;
+moves it to Blocked. --sync-status first retries a recorded pending update.
+Otherwise it runs a read-only review of committed and uncommitted changes from
+the recorded base against the verified issue and OpenSpec contract, reports
+PASS/FAIL/BLOCKED evidence, and moves only the recorded item to Done, Review,
+or Blocked.`;
 
 const OPTION_NAMES = [
   "task", "project-owner", "project-number", "status-field", "status-value", "done-status",
-  "blocked-status", "issue", "apply", "sync-status", "dry-run", "help",
+  "review-status", "blocked-status", "issue", "apply", "sync-status", "dry-run", "help",
 ];
 
 function flagCount(args, name) {
@@ -58,6 +60,7 @@ export function parseCliArgs(args, { isTTY = Boolean(process.stdin.isTTY) } = {}
         "status-field": { type: "string" },
         "status-value": { type: "string" },
         "done-status": { type: "string" },
+        "review-status": { type: "string" },
         "blocked-status": { type: "string" },
         issue: { type: "string" },
         apply: { type: "string" },
@@ -77,7 +80,7 @@ export function parseCliArgs(args, { isTTY = Boolean(process.stdin.isTTY) } = {}
   const intakeValues = [
     parsed.values.task, parsed.values["project-owner"], parsed.values["project-number"],
     parsed.values["status-field"], parsed.values["status-value"], parsed.values["done-status"],
-    parsed.values["blocked-status"], parsed.values.issue,
+    parsed.values["review-status"], parsed.values["blocked-status"], parsed.values.issue,
   ];
   const hasIntake = intakeValues.some((value) => value !== undefined);
   if (applyValue !== undefined || syncValue !== undefined) {
@@ -107,14 +110,15 @@ export function parseCliArgs(args, { isTTY = Boolean(process.stdin.isTTY) } = {}
     statusField: parsed.values["status-field"]?.trim() || "Status",
     statusValue: parsed.values["status-value"]?.trim() || "Todo",
     doneStatus: parsed.values["done-status"]?.trim() || "Done",
+    reviewStatus: parsed.values["review-status"]?.trim() || "Review",
     blockedStatus: parsed.values["blocked-status"]?.trim() || "Blocked",
     issueSelector: parsed.values.issue?.trim() || null,
   };
-  for (const [option, raw] of [["status-field", parsed.values["status-field"]], ["status-value", parsed.values["status-value"]], ["done-status", parsed.values["done-status"]], ["blocked-status", parsed.values["blocked-status"]]]) {
+  for (const [option, raw] of [["status-field", parsed.values["status-field"]], ["status-value", parsed.values["status-value"]], ["done-status", parsed.values["done-status"]], ["review-status", parsed.values["review-status"]], ["blocked-status", parsed.values["blocked-status"]]]) {
     if (raw !== undefined && !raw.trim()) fail(`--${option} cannot be empty.`);
   }
   if (parsed.values.issue !== undefined && !parsed.values.issue.trim()) fail("Issue selector cannot be empty.");
-  if (new Set([values.statusValue, values.doneStatus, values.blockedStatus]).size !== 3) fail("Todo, Done, and Blocked status values must be distinct.");
+  if (new Set([values.statusValue, values.doneStatus, values.reviewStatus, values.blockedStatus]).size !== 4) fail("Todo, Done, Review, and Blocked status values must be distinct.");
   if (!isTTY && !values.issueSelector) fail("Non-interactive Project mode requires --issue <owner/repo#number>.");
 
   return {

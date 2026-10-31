@@ -54,11 +54,24 @@ export function formatBlocked({ changeName, sourceLabel, summary, recordPath, pr
   ].join("\n");
 }
 
-export function formatStatusSync({ changeName, status, recordPath, completionBasis = null, verification = [] }) {
+export function formatStatusSync({ changeName, status, recordPath, completionBasis = null, verification = [], report = null, derivedTarget = null, effectiveTarget = null, fallbackReason = null }) {
   return [
     `GitHub Project status synchronized: ${changeName} -> ${status}`,
     ...(completionBasis ? [`Completion basis: ${completionBasis}`] : []),
+    ...(derivedTarget ? [`Derived status: ${derivedTarget}`] : []),
+    ...(effectiveTarget && effectiveTarget !== derivedTarget ? [`Effective status: ${effectiveTarget}`] : []),
+    ...(fallbackReason ? [`Status fallback: ${fallbackReason}`] : []),
     ...(verification.length ? [`Verification: ${verification.join(", ")}`] : []),
+    ...(report ? [
+      `Review summary: ${report.summary}`,
+      ...(report.humanReviewRequired ? ["Human review required:", ...report.humanReviewReasons.map((reason) => `  - ${reason}`)] : []),
+      "Requirement results:",
+      ...report.entries.flatMap((entry) => [
+        `  - [${entry.result}] ${entry.id} ${entry.label}`,
+        ...entry.evidence.map((item) => `    Evidence: ${item}`),
+        ...entry.remainingWork.map((item) => `    Remaining: ${item}`),
+      ]),
+    ] : []),
     "No issue was edited or closed, and no code was committed, pushed, or published.",
     `Run record: ${recordPath}`,
   ].join("\n");

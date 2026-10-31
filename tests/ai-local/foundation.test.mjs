@@ -9,7 +9,7 @@ import { parseCliArgs } from "../../automation/ai-local/lib/cli.mjs";
 import { parseAgentResult } from "../../automation/ai-local/lib/contracts.mjs";
 import { LocalRunError, sanitizeText } from "../../automation/ai-local/lib/errors.mjs";
 import { githubEnvironment } from "../../automation/ai-local/lib/github-project.mjs";
-import { inspectRepository, inspectTools, preflight, preflightApply } from "../../automation/ai-local/lib/preflight.mjs";
+import { inspectRepository, inspectTools, preflight, preflightApply, preflightStatusSync } from "../../automation/ai-local/lib/preflight.mjs";
 import { runProcess, sanitizedChildEnvironment } from "../../automation/ai-local/lib/process.mjs";
 import { createRunId, findPendingStatusRecord, findStatusSyncEvidence, findSuccessfulPlanRecord, initialRunRecord, updateRunRecord, writeRunRecord } from "../../automation/ai-local/lib/run-record.mjs";
 import { createGitHubIssueTask, resolveTaskFile, slugifyTitle } from "../../automation/ai-local/lib/task.mjs";
@@ -19,10 +19,11 @@ test("CLI accepts mutually exclusive Markdown and Project intake shapes", () => 
   assert.deepEqual(parseCliArgs(["--task", "tasks/example.md"]), { help: false, mode: "plan", taskPath: "tasks/example.md", project: null, changeName: null, dryRun: false });
   assert.deepEqual(parseCliArgs(["--task=tasks/example.md", "--dry-run"]), { help: false, mode: "plan", taskPath: "tasks/example.md", project: null, changeName: null, dryRun: true });
   const project = parseCliArgs(["--project-owner", "acme", "--project-number", "7"], { isTTY: true });
-  assert.deepEqual(project.project, { owner: "acme", number: 7, statusField: "Status", statusValue: "Todo", doneStatus: "Done", blockedStatus: "Blocked", issueSelector: null, isTTY: true });
-  const selected = parseCliArgs(["--project-owner=acme", "--project-number=7", "--status-field", "Workflow", "--status-value", "Ready", "--issue", "acme/shop#12"], { isTTY: false });
+  assert.deepEqual(project.project, { owner: "acme", number: 7, statusField: "Status", statusValue: "Todo", doneStatus: "Done", reviewStatus: "Review", blockedStatus: "Blocked", issueSelector: null, isTTY: true });
+  const selected = parseCliArgs(["--project-owner=acme", "--project-number=7", "--status-field", "Workflow", "--status-value", "Ready", "--review-status", "Needs review", "--issue", "acme/shop#12"], { isTTY: false });
   assert.equal(selected.project.issueSelector, "acme/shop#12");
   assert.equal(selected.project.statusField, "Workflow");
+  assert.equal(selected.project.reviewStatus, "Needs review");
   assert.equal(parseCliArgs(["--apply", "local-change"]).mode, "apply");
   assert.equal(parseCliArgs(["--sync-status", "local-change"]).mode, "sync-status");
   assert.equal(parseCliArgs(["--help"]).help, true);
@@ -39,6 +40,7 @@ test("CLI accepts mutually exclusive Markdown and Project intake shapes", () => 
   assert.throws(() => parseCliArgs(["--apply", "local-a", "--task", "a.md"]), /mutually exclusive/);
   assert.throws(() => parseCliArgs(["--sync-status", "local-a", "--dry-run"]), /does not accept/);
   assert.throws(() => parseCliArgs(["--project-owner", "acme", "--project-number", "1", "--done-status", "Todo"], { isTTY: true }), /must be distinct/);
+  assert.throws(() => parseCliArgs(["--project-owner", "acme", "--project-number", "1", "--review-status", "Done"], { isTTY: true }), /must be distinct/);
 });
 
 test("task intake derives bounded identity and rejects unsafe task files", async () => {
@@ -82,6 +84,7 @@ test("GitHub issue tasks use bounded canonical identity and untrusted frozen con
   assert.match(first.body, /untrusted task data/);
   assert.match(first.body, /print GITHUB_TOKEN/);
   assert.equal(first.source.issueNumber, 42);
+  assert.equal(first.source.reviewStatus, "Review");
   assert.ok(Object.isFrozen(first.source));
 });
 
@@ -192,6 +195,8 @@ test("run records are atomic allowlisted metadata without task bodies or credent
   const githubRecord = initialRunRecord({ runId: "run", task: githubTask, baseSha: "b".repeat(40), branch: "main", tools: { node: "22", git: "git", openspec: "1.12.0", codex: "0.1" } });
   const githubText = JSON.stringify(githubRecord);
   assert.match(githubText, /acme\/shop/);
+  assert.match(githubText, /"reviewStatus":"Review"/);
+  assert.equal(githubRecord.reviewReport, null);
   assert.doesNotMatch(githubText, /Secret title|body secret/);
 });
 
@@ -219,6 +224,8 @@ test("pending status discovery requires a proven GitHub terminal transition", as
   record = updateRunRecord(record, { phase: "status-sync", outcome: "failure", statusSync: { state: "pending", target: "done", value: "Done" } });
   await writeRunRecord(root, record);
   assert.equal((await findPendingStatusRecord(root, githubTask.changeName)).runId, "apply-one");
+  await writeRunRecord(root, { ...record, runId: "review-one", statusSync: { state: "pending", target: "review", value: "Review" } });
+  await assert.rejects(() => findPendingStatusRecord(root, githubTask.changeName), (error) => error.code === "STATUS_SYNC_AMBIGUOUS");
   await assert.rejects(() => findPendingStatusRecord(root, "local-missing"), (error) => error.code === "STATUS_SYNC_MISSING");
 });
 
@@ -236,7 +243,7 @@ test("status-sync evidence prioritizes pending, recognizes synchronized, and fal
   const plan = makePlan();
   await writeRunRecord(fallback, plan);
   await writeRunRecord(fallback, { ...plan, runId: "apply-failed", mode: "apply", parentPlanRunId: plan.runId, phase: "validation", outcome: "failure", error: "tests failed" });
-  assert.deepEqual(await findStatusSyncEvidence(fallback, githubTask.changeName), { kind: "plan", record: plan });
+  assert.deepEqual(await findStatusSyncEvidence(fallback, githubTask.changeName), { kind: "plan", record: plan, allowBlockedCurrent: false });
 
   const pending = { ...plan, runId: "apply-pending", mode: "apply", parentPlanRunId: plan.runId, outcome: "failure", statusSync: { state: "pending", target: "done", value: "Done" } };
   await writeRunRecord(fallback, pending);
@@ -246,6 +253,13 @@ test("status-sync evidence prioritizes pending, recognizes synchronized, and fal
   await writeRunRecord(synchronized, plan);
   await writeRunRecord(synchronized, { ...pending, statusSync: { state: "synchronized", target: "done", value: "Done" } });
   assert.equal((await findStatusSyncEvidence(synchronized, githubTask.changeName)).kind, "synchronized");
+
+  const reviewable = await tempDirectory();
+  await writeRunRecord(reviewable, plan);
+  await writeRunRecord(reviewable, { ...pending, runId: "review-result", mode: "sync-status", reviewReport: { entries: [] }, statusSync: { state: "synchronized", target: "review", value: "Review" } });
+  assert.equal((await findStatusSyncEvidence(reviewable, githubTask.changeName)).kind, "plan");
+  await writeRunRecord(reviewable, { ...pending, runId: "blocked-review", mode: "sync-status", reviewReport: { entries: [{ result: "BLOCKED" }] }, statusSync: { state: "synchronized", target: "blocked", value: "Blocked" } });
+  assert.equal((await findStatusSyncEvidence(reviewable, githubTask.changeName)).allowBlockedCurrent, true);
 
   const ambiguous = await tempDirectory();
   await writeRunRecord(ambiguous, pending);
@@ -259,6 +273,69 @@ test("status-sync evidence prioritizes pending, recognizes synchronized, and fal
   await assert.rejects(() => findStatusSyncEvidence(markdown, "local-a"), (error) => error.code === "STATUS_SYNC_SOURCE");
   const missing = await tempDirectory();
   await assert.rejects(() => findStatusSyncEvidence(missing, "local-missing"), (error) => error.code === "PLAN_RECORD_MISSING");
+});
+
+test("status-sync preflight verifies issue identity, branch, and base ancestry", async () => {
+  const root = await initRepository();
+  const branch = git(root, ["branch", "--show-current"]).stdout.trim();
+  const baseSha = git(root, ["rev-parse", "HEAD"]).stdout.trim();
+  const snapshot = { projectOwner: "acme", projectNumber: 7, itemId: "PVTI_1", repository: "acme/shop", number: 12, title: "Task", body: "Acceptance", url: "https://github.com/acme/shop/issues/12", statusField: "Status", statusValue: "Todo", doneStatus: "Done", reviewStatus: "Review", blockedStatus: "Blocked", currentStatus: "Todo" };
+  const task = createGitHubIssueTask(snapshot);
+  const record = updateRunRecord(initialRunRecord({ runId: "plan", task, baseSha, branch, tools: { node: "22", git: "git", openspec: "1.12.0", codex: "1" } }), { phase: "complete", outcome: "success", approvedPlanHash: "c".repeat(64) });
+  await writeRunRecord(root, record);
+  const context = await preflightStatusSync({ cwd: root, changeName: task.changeName, issueRefresher: async () => snapshot, env: {} });
+  assert.equal(context.baseSha, baseSha);
+  assert.equal(context.branch, branch);
+  assert.equal(context.issueTask.hash, task.hash);
+
+  await writeFile(path.join(root, "later.txt"), "later commit\n");
+  git(root, ["add", "later.txt"]);
+  git(root, ["commit", "-m", "later implementation"]);
+  assert.equal((await preflightStatusSync({ cwd: root, changeName: task.changeName, issueRefresher: async () => snapshot, env: {} })).baseSha, baseSha);
+
+  git(root, ["switch", "-c", "renamed-review-branch"]);
+  await assert.rejects(
+    () => preflightStatusSync({ cwd: root, changeName: task.changeName, issueRefresher: async () => snapshot, env: {} }),
+    (error) => error.code === "BRANCH_IDENTITY",
+  );
+  git(root, ["switch", branch]);
+  git(root, ["switch", "--detach", "HEAD"]);
+  await assert.rejects(
+    () => preflightStatusSync({ cwd: root, changeName: task.changeName, issueRefresher: async () => snapshot, env: {} }),
+    (error) => error.code === "BRANCH_DETACHED",
+  );
+  git(root, ["switch", branch]);
+
+  await writeRunRecord(root, { ...record, baseSha: "d".repeat(40) });
+  await assert.rejects(
+    () => preflightStatusSync({ cwd: root, changeName: task.changeName, issueRefresher: async () => snapshot, env: {} }),
+    (error) => error.code === "BASE_COMMIT",
+  );
+  await writeRunRecord(root, record);
+
+  await assert.rejects(
+    () => preflightStatusSync({ cwd: root, changeName: task.changeName, issueRefresher: async () => ({ ...snapshot, body: "changed" }), env: {} }),
+    (error) => error.code === "TASK_IDENTITY",
+  );
+  await assert.rejects(
+    () => preflightStatusSync({ cwd: root, changeName: task.changeName, issueRefresher: async () => ({ ...snapshot, currentStatus: "Doing" }), env: {} }),
+    (error) => error.code === "GITHUB_ISSUE_STALE",
+  );
+
+  const rebased = await initRepository();
+  const rebasedBase = git(rebased, ["rev-parse", "HEAD"]).stdout.trim();
+  const rebasedRecord = updateRunRecord(initialRunRecord({ runId: "plan", task, baseSha: rebasedBase, branch: "main", tools: { node: "22", git: "git", openspec: "1.12.0", codex: "1" } }), { phase: "complete", outcome: "success", approvedPlanHash: "c".repeat(64) });
+  await writeRunRecord(rebased, rebasedRecord);
+  git(rebased, ["switch", "--orphan", "replacement"]);
+  await writeFile(path.join(rebased, "replacement.txt"), "replacement history\n");
+  git(rebased, ["add", "."]);
+  git(rebased, ["commit", "-m", "replacement history"]);
+  git(rebased, ["branch", "-D", "main"]);
+  git(rebased, ["branch", "-m", "main"]);
+  await assert.rejects(
+    () => preflightStatusSync({ cwd: rebased, changeName: task.changeName, issueRefresher: async () => snapshot, env: {} }),
+    (error) => error.code === "BASE_ANCESTRY",
+  );
 });
 
 test("repository and tool preflight fail closed on dirty or incompatible state", async () => {

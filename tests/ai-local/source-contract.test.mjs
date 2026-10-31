@@ -23,6 +23,7 @@ test("local runner permits one narrow Project status mutation but no publication
   assert.doesNotMatch(githubSource, /"workflow",\s*"run"|\.github\/workflows/);
   assert.doesNotMatch(codex, /danger-full-access|approve-for-me|bypass-approvals/);
   assert.match(codex, /workspace-write/);
+  assert.match(codex, /read-only/);
   assert.match(codex, /--ephemeral/);
   assert.match(codex, /--model/);
   assert.match(codex, /CODEX_MODEL = "gpt-5\.6-sol"/);
@@ -33,13 +34,17 @@ test("local runner permits one narrow Project status mutation but no publication
   assert.doesNotMatch(githubSource.match(/const GITHUB_ENV_KEYS = \[[\s\S]*?\];/)?.[0] || "", /GITHUB_TOKEN|GH_TOKEN|AI_PROJECT_TOKEN|CODEX_API_KEY|CODEX_ACCESS_TOKEN/);
 });
 
-test("trusted prompts preserve plan/apply separation and forbid publication", async () => {
-  const [plan, implementation] = await Promise.all([
+test("trusted prompts preserve plan/apply/review separation and forbid publication", async () => {
+  const [plan, implementation, review] = await Promise.all([
     readFile("automation/ai-local/prompts/plan.md", "utf8"),
     readFile("automation/ai-local/prompts/implementation.md", "utf8"),
+    readFile("automation/ai-local/prompts/review.md", "utf8"),
   ]);
   for (const required of ["AGENTS.md", "openspec-propose", "{{CHANGE_NAME}}", "untrusted", "--strict", "outside"]) assert.match(plan, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   for (const required of ["AGENTS.md", "openspec-apply-change", "source of truth", "truthful", "Do not", "push", "GitHub"]) assert.match(implementation, new RegExp(required, "i"));
+  for (const required of ["AGENTS.md", "acceptance criterion", "committed", "staged", "unstaged", "deleted", "untracked", "PASS", "FAIL", "BLOCKED", "humanReviewRequired", "untrusted", "read-only"]) assert.match(review, new RegExp(required, "i"));
+  assert.match(review, /Do not choose or recommend a GitHub Project status/i);
+  assert.match(review, /Do not implement fixes/i);
 });
 
 test("package scripts expose the local runner as the only AI delivery command", async () => {
@@ -67,9 +72,13 @@ test("operator documentation matches the two-stage CLI contract", async () => {
   assert.match(guide, /technical failures leave/i);
   assert.match(guide, /\$openspec-apply-change/);
   assert.match(guide, /unique successful\s+GitHub-backed plan/i);
-  assert.match(guide, /never invokes Codex/i);
+  assert.match(guide, /read-only[\s\S]*Codex|review Codex[\s\S]*read-only/i);
+  assert.match(guide, /committed[\s\S]*staged[\s\S]*unstaged[\s\S]*(?:deleted|deletions)[\s\S]*untracked/i);
+  assert.match(guide, /PASS[\s\S]*FAIL[\s\S]*BLOCKED/i);
+  assert.match(guide, /Done[\s\S]*Review[\s\S]*Blocked/i);
+  assert.match(guide, /fallback reason/i);
   assert.match(guide, /never[\s\S]*edits\/closes the issue/i);
-  assert.match(cli, /verifies a completed unstaged \$openspec-apply-change implementation/i);
-  assert.match(agents, /verifies a completed unstaged `\$openspec-apply-change` implementation/i);
+  assert.match(cli, /read-only review of committed and uncommitted changes/i);
+  assert.match(agents, /reviews all committed, staged, unstaged, deleted, and untracked changes/i);
   assert.doesNotMatch(guide, /Project mode is read-only|operator updates Project status manually/i);
 });

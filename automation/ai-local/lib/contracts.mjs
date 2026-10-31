@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { assertLocal, LocalRunError } from "./errors.mjs";
+import { validateReviewReport } from "./review.mjs";
 
 const EXACT_KEYS = ["version", "phase", "outcome", "summary", "verification"];
 
@@ -31,4 +32,18 @@ export function parseAgentResult(text, expectedPhase) {
 
 export async function readAgentResult(filePath, expectedPhase) {
   return parseAgentResult(await readFile(filePath, "utf8"), expectedPhase);
+}
+
+export function parseReviewResult(text, requiredInventory = []) {
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new LocalRunError("RESULT_JSON", "Agent final response is not valid JSON");
+  }
+  return validateReviewReport(value, requiredInventory);
+}
+
+export async function readReviewResult(filePath, requiredInventory = []) {
+  return parseReviewResult(await readFile(filePath, "utf8"), requiredInventory);
 }

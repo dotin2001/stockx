@@ -69,11 +69,12 @@ function statusConfig(source) {
     statusField: String(source.statusField || "Status"),
     statusValue: String(source.statusValue || "Todo"),
     doneStatus: String(source.doneStatus || "Done"),
+    reviewStatus: String(source.reviewStatus || "Review"),
     blockedStatus: String(source.blockedStatus || "Blocked"),
   };
   assertLocal(config.projectOwner && Number.isInteger(config.projectNumber) && config.projectNumber > 0 && config.itemId, "GITHUB_STATUS_SOURCE", "Recorded Project identity is invalid");
   assertLocal(config.repository && Number.isInteger(config.issueNumber) && config.issueNumber > 0, "GITHUB_STATUS_SOURCE", "Recorded issue identity is invalid");
-  assertLocal(config.statusField && new Set([config.statusValue, config.doneStatus, config.blockedStatus]).size === 3, "GITHUB_STATUS_SOURCE", "Recorded Project status configuration is invalid");
+  assertLocal(config.statusField && new Set([config.statusValue, config.doneStatus, config.reviewStatus, config.blockedStatus]).size === 4, "GITHUB_STATUS_SOURCE", "Recorded Project status configuration is invalid");
   return config;
 }
 
@@ -141,16 +142,60 @@ async function readRecordedItem({ root, config, commandRunner, signal }) {
   assertLocal(content.repository?.nameWithOwner === config.repository && Number(content.number) === config.issueNumber, "GITHUB_ISSUE_STALE", "Recorded Project item identity changed");
   const currentStatus = node.fieldValueByName?.name;
   assertLocal(typeof currentStatus === "string" && currentStatus.length > 0, "GITHUB_STATUS_FIELD", `Recorded item has no ${config.statusField} value`);
-  return currentStatus;
+  return Object.freeze({ currentStatus, content: Object.freeze({
+    id: content.id,
+    number: Number(content.number),
+    title: String(content.title || ""),
+    body: String(content.body || ""),
+    url: String(content.url || ""),
+    repository: String(content.repository?.nameWithOwner || ""),
+  }) });
 }
 
-export async function prepareProjectStatus({ root, source, target = null, commandRunner = runProcess, signal }) {
+export async function refreshRecordedIssue({ root, source, commandRunner = runProcess, signal }) {
+  const config = statusConfig(source);
+  await resolveGitHubProject({ root, owner: config.projectOwner, number: config.projectNumber, commandRunner, signal });
+  const { currentStatus, content } = await readRecordedItem({ root, config, commandRunner, signal });
+  assertLocal(content.url === String(source.url || ""), "GITHUB_ISSUE_STALE", "Recorded issue URL changed");
+  return Object.freeze({
+    projectOwner: config.projectOwner,
+    projectNumber: config.projectNumber,
+    itemId: config.itemId,
+    repository: content.repository,
+    number: content.number,
+    title: content.title,
+    body: content.body,
+    url: content.url,
+    statusField: config.statusField,
+    statusValue: config.statusValue,
+    doneStatus: config.doneStatus,
+    reviewStatus: config.reviewStatus,
+    blockedStatus: config.blockedStatus,
+    currentStatus,
+  });
+}
+
+function targetValue(config, target) {
+  if (target === "done") return config.doneStatus;
+  if (target === "review") return config.reviewStatus;
+  if (target === "blocked") return config.blockedStatus;
+  return null;
+}
+
+export async function prepareProjectStatus({ root, source, target = null, allowReviewFallback = false, allowReviewStates = false, allowBlockedCurrent = false, commandRunner = runProcess, signal }) {
   const config = statusConfig(source);
   const project = await resolveGitHubProject({ root, owner: config.projectOwner, number: config.projectNumber, commandRunner, signal });
-  const currentStatus = await readRecordedItem({ root, config, commandRunner, signal });
-  assertLocal(target === null || ["done", "blocked"].includes(target), "GITHUB_STATUS_TARGET", "Project status target is not allowlisted");
-  const desired = target === "done" ? config.doneStatus : target === "blocked" ? config.blockedStatus : null;
-  assertLocal(currentStatus === config.statusValue || currentStatus === desired, "GITHUB_ISSUE_STALE", `Selected issue is no longer in ${config.statusValue}${desired ? ` or ${desired}` : ""}`);
+  const { currentStatus } = await readRecordedItem({ root, config, commandRunner, signal });
+  assertLocal(target === null || ["done", "review", "blocked"].includes(target), "GITHUB_STATUS_TARGET", "Project status target is not allowlisted");
+  const desired = targetValue(config, target);
+  const allowedCurrentStatuses = new Set([config.statusValue, desired].filter(Boolean));
+  if (allowReviewStates) {
+    allowedCurrentStatuses.add(config.reviewStatus);
+  }
+  if (allowBlockedCurrent) {
+    allowedCurrentStatuses.add(config.blockedStatus);
+  }
+  assertLocal(allowedCurrentStatuses.has(currentStatus), "GITHUB_ISSUE_STALE", `Selected issue has unexpected ${config.statusField} value ${currentStatus}`);
   let fieldsResult;
   try {
     fieldsResult = await github(commandRunner, root, ["project", "field-list", String(config.projectNumber), "--owner", config.projectOwner, "--format", "json"], signal);
@@ -167,21 +212,45 @@ export async function prepareProjectStatus({ root, source, target = null, comman
     assertLocal(options.length === 1, "GITHUB_STATUS_OPTION", `${config.statusField} must contain exactly one ${name} option`);
     return options[0].id;
   };
+  const optionIds = {};
+  let effectiveTarget = target;
+  let fallbackReason = null;
+  if (target === null) {
+    optionIds.done = optionId(config.doneStatus);
+    optionIds.blocked = optionId(config.blockedStatus);
+  } else if (target === "blocked" && allowReviewFallback) {
+    try {
+      optionIds.blocked = optionId(config.blockedStatus);
+    } catch (error) {
+      if (error?.code !== "GITHUB_STATUS_OPTION") throw error;
+      effectiveTarget = "review";
+      fallbackReason = `${config.statusField} has no unique ${config.blockedStatus} option; using ${config.reviewStatus}`;
+      optionIds.review = optionId(config.reviewStatus);
+    }
+  } else {
+    optionIds[target] = optionId(targetValue(config, target));
+  }
   return Object.freeze({
     projectId: project.id,
     fieldId: field.id,
     itemId: config.itemId,
     config: Object.freeze(config),
-    optionIds: Object.freeze({ done: optionId(config.doneStatus), blocked: optionId(config.blockedStatus) }),
+    currentStatus,
+    requestedTarget: target,
+    effectiveTarget,
+    fallbackReason,
+    allowedCurrentStatuses: Object.freeze([...allowedCurrentStatuses]),
+    optionIds: Object.freeze(optionIds),
   });
 }
 
 export async function updateProjectStatus({ root, prepared, target, commandRunner = runProcess, signal }) {
-  assertLocal(["done", "blocked"].includes(target), "GITHUB_STATUS_TARGET", "Project status target is not allowlisted");
-  const desired = target === "done" ? prepared.config.doneStatus : prepared.config.blockedStatus;
-  const current = await readRecordedItem({ root, config: prepared.config, commandRunner, signal });
+  assertLocal(["done", "review", "blocked"].includes(target), "GITHUB_STATUS_TARGET", "Project status target is not allowlisted");
+  assertLocal(prepared.optionIds?.[target], "GITHUB_STATUS_OPTION", "Prepared Project status option does not match the requested target");
+  const desired = targetValue(prepared.config, target);
+  const { currentStatus: current } = await readRecordedItem({ root, config: prepared.config, commandRunner, signal });
   if (current === desired) return { status: desired, alreadyCurrent: true };
-  assertLocal(current === prepared.config.statusValue, "GITHUB_ISSUE_STALE", `Project item status changed from ${prepared.config.statusValue} to ${current}`);
+  assertLocal(prepared.allowedCurrentStatuses.includes(current), "GITHUB_ISSUE_STALE", `Project item status changed to unexpected value ${current}`);
   try {
     await github(commandRunner, root, [
       "project", "item-edit",
@@ -194,6 +263,41 @@ export async function updateProjectStatus({ root, prepared, target, commandRunne
     throw new LocalRunError("STATUS_SYNC_FAILED", `Could not update the selected Project item to ${desired}`);
   }
   return { status: desired, alreadyCurrent: false };
+}
+
+export function serializePreparedProjectStatus(prepared, target) {
+  const optionId = prepared?.optionIds?.[target];
+  if (![prepared?.projectId, prepared?.fieldId, prepared?.itemId, optionId].every((value) => typeof value === "string" && value.length > 0)) return null;
+  const desired = prepared.config ? targetValue(prepared.config, target) : null;
+  const allowedCurrentStatuses = [...new Set([...(prepared.allowedCurrentStatuses || []), desired].filter(Boolean))];
+  return Object.freeze({
+    projectId: prepared.projectId,
+    fieldId: prepared.fieldId,
+    itemId: prepared.itemId,
+    optionId,
+    allowedCurrentStatuses: Object.freeze(allowedCurrentStatuses),
+  });
+}
+
+export function restorePreparedProjectStatus(source, target, intent) {
+  const config = statusConfig(source);
+  assertLocal(intent && typeof intent === "object" && !Array.isArray(intent), "STATUS_SYNC_INTENT", "Pending Project status intent is invalid");
+  for (const key of ["projectId", "fieldId", "itemId", "optionId"]) {
+    assertLocal(typeof intent[key] === "string" && intent[key].length > 0, "STATUS_SYNC_INTENT", `Pending Project status intent is missing ${key}`);
+  }
+  assertLocal(intent.itemId === config.itemId, "STATUS_SYNC_INTENT", "Pending Project item identity changed");
+  const desired = targetValue(config, target);
+  assertLocal(desired && Array.isArray(intent.allowedCurrentStatuses), "STATUS_SYNC_INTENT", "Pending Project status target is invalid");
+  const allowedCurrentStatuses = [...new Set(intent.allowedCurrentStatuses.map(String))];
+  assertLocal(allowedCurrentStatuses.includes(desired) && allowedCurrentStatuses.includes(config.statusValue), "STATUS_SYNC_INTENT", "Pending Project status transition is inconsistent");
+  return Object.freeze({
+    projectId: intent.projectId,
+    fieldId: intent.fieldId,
+    itemId: intent.itemId,
+    config: Object.freeze(config),
+    allowedCurrentStatuses: Object.freeze(allowedCurrentStatuses),
+    optionIds: Object.freeze({ [target]: intent.optionId }),
+  });
 }
 
 function issueFromNode(node, statusValue) {

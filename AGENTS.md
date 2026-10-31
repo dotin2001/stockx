@@ -166,7 +166,14 @@ alembic downgrade base
   must never edit issues, commit, push, open pull requests, merge, or publish.
 - `npm run ai:local -- --sync-status <change-name>` first retries a proven
   pending terminal transition. Otherwise, for a unique successful GitHub-backed
-  plan, it verifies a completed unstaged `$openspec-apply-change` implementation
-  against the approved plan and trusted checks before recording and setting
-  `Done`. Status sync never invokes Codex, applies a patch, commits, pushes,
+  plan, it re-verifies the exact issue, recorded branch, and base ancestry;
+  reviews all committed, staged, unstaged, deleted, and untracked changes from
+  that base against the issue acceptance criteria and approved OpenSpec
+  proposal/spec/design/tasks; runs trusted checks; and records a per-requirement
+  PASS, FAIL, or BLOCKED report. It selects `Done` only for all-PASS/no-human-
+  review results, `Review` for failures or human judgment, and `Blocked` only
+  for otherwise failure-free unavailable verification. Missing `Blocked` falls
+  back to `Review` with a recorded reason. Review and review-produced Blocked
+  results can be reviewed again; Done is terminal. Status review uses read-only
+  Codex with no GitHub credentials and never applies a patch, commits, pushes,
   publishes, or edits/closes the issue.
