@@ -13,10 +13,11 @@ plan unstaged for review, and stop. --apply explicitly approves one reviewed
 plan and runs implementation. For a GitHub-backed plan, a successful apply
 moves only the selected Project item to Done and a structured task blocker
 moves it to Blocked. --sync-status first retries a recorded pending update.
-Otherwise it runs a read-only review of committed and uncommitted changes from
-the recorded base against the verified issue and OpenSpec contract, reports
-PASS/FAIL/BLOCKED evidence, and moves only the recorded item to Done, Review,
-or Blocked.`;
+Otherwise it runs trusted path-selected host checks over committed and
+uncommitted changes from the recorded base. Any failed check selects Review,
+otherwise any blocked check selects Blocked, and a non-empty all-pass set selects
+Done. Semantic review does not gate status; only the recorded item's Status
+field can change.`;
 
 const OPTION_NAMES = [
   "task", "project-owner", "project-number", "status-field", "status-value", "done-status",

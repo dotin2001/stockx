@@ -11,9 +11,11 @@ dependencies = [
   "alembic>=1.13",
   "argon2-cffi>=23.1",
   "fastapi>=0.115",
+  "email-validator>=2.2",
   "PyJWT>=2.8",
   "psycopg[binary]>=3.2",
   "pydantic-settings>=2.4",
+  "redis>=5.2",
   "sqlalchemy>=2.0",
   "stripe==16.0.0",
   "uvicorn[standard]>=0.30"
@@ -23,17 +25,22 @@ dependencies = [
 stockx-api-admin = "app.admin:main"
 stockx-api-cleanup-refresh-tokens = "app.cleanup_refresh_tokens:main"
 stockx-api-reconcile-payments = "app.reconcile_payments:main"
+stockx-api-payment-health = "app.payment_health:main"
 stockx-api-smoke = "app.smoke:main"
 
 [project.optional-dependencies]
 dev = [
   "httpx>=0.27",
+  "httpx2>=0.1",
   "pytest>=8.0"
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+filterwarnings = [
+  "error::DeprecationWarning",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

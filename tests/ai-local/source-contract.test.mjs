@@ -72,13 +72,15 @@ test("operator documentation matches the two-stage CLI contract", async () => {
   assert.match(guide, /technical failures leave/i);
   assert.match(guide, /\$openspec-apply-change/);
   assert.match(guide, /unique successful\s+GitHub-backed plan/i);
-  assert.match(guide, /read-only[\s\S]*Codex|review Codex[\s\S]*read-only/i);
+  assert.match(guide, /Semantic Codex review is not invoked[\s\S]*does not gate/i);
   assert.match(guide, /committed[\s\S]*staged[\s\S]*unstaged[\s\S]*(?:deleted|deletions)[\s\S]*untracked/i);
   assert.match(guide, /PASS[\s\S]*FAIL[\s\S]*BLOCKED/i);
   assert.match(guide, /Done[\s\S]*Review[\s\S]*Blocked/i);
   assert.match(guide, /fallback reason/i);
   assert.match(guide, /never[\s\S]*edits\/closes the issue/i);
-  assert.match(cli, /read-only review of committed and uncommitted changes/i);
-  assert.match(agents, /reviews all committed, staged, unstaged, deleted, and untracked changes/i);
+  assert.match(cli, /trusted path-selected host checks over committed and[\s\S]*uncommitted changes/i);
+  assert.match(cli, /failed check selects Review[\s\S]*blocked check selects Blocked[\s\S]*all-pass set selects[\s\S]*Done/i);
+  assert.match(agents, /collects all committed, staged, unstaged, deleted, and untracked changes/i);
+  assert.match(agents, /host checks are authoritative[\s\S]*`FAIL` selects[\s\S]*`Review`[\s\S]*`BLOCKED` selects[\s\S]*`Blocked`[\s\S]*all-`PASS`[\s\S]*`Done`/i);
   assert.doesNotMatch(guide, /Project mode is read-only|operator updates Project status manually/i);
 });

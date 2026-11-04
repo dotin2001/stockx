@@ -16,6 +16,7 @@ from app.models import Order, PaymentAttempt, StripeWebhookEvent
 from app.payments import CheckoutSessionProvider, PaymentProviderError, ProviderCheckoutSession
 from app.services import payment_checkout
 from app.services.customer_lock import lock_customer_row
+from app.services.observability import emit_event
 
 
 SUPPORTED_EVENT_TYPES = {
@@ -78,6 +79,11 @@ def _fail_event(db: Session, record: StripeWebhookEvent, code: str) -> None:
     record.error_summary = code[:255]
     record.processed_at = datetime.now(UTC)
     db.commit()
+    emit_event(
+        "payment_webhook_failed",
+        category=code,
+        stripe_event_id=record.stripe_event_id,
+    )
 
 
 def _correlated_session(
@@ -166,6 +172,7 @@ def _apply_event_transition(
     attempt: PaymentAttempt,
     provider_session: ProviderCheckoutSession,
 ) -> None:
+    previous_status = attempt.status
     if event_type in {"checkout.session.completed", "checkout.session.async_payment_succeeded"}:
         if provider_session.payment_status == "paid":
             payment_checkout.mark_payment_paid(
@@ -206,6 +213,13 @@ def _apply_event_transition(
     record.error_summary = None
     record.processed_at = datetime.now(UTC)
     db.commit()
+    emit_event(
+        "payment_attempt_transition",
+        attempt_id=str(attempt.id),
+        previous_status=previous_status,
+        next_status=attempt.status,
+        source="stripe_webhook",
+    )
 
 
 def handle_verified_event(db: Session, *, event: dict[str, Any], payload: bytes) -> dict[str, bool]:

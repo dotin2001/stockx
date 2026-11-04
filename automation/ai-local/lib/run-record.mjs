@@ -153,9 +153,17 @@ export async function findStatusSyncEvidence(root, changeName) {
   assertLocal(pending.length <= 1, "STATUS_SYNC_AMBIGUOUS", `Multiple pending Project status updates exist for ${changeName}`);
   if (pending.length === 1) return Object.freeze({ kind: "pending", record: Object.freeze(assertTerminalRecord(pending[0])) });
 
-  const reviewProducedBlocked = records.filter((record) => record?.version === 3 && record.changeName === changeName && record.statusSync?.state === "synchronized" && record.statusSync.target === "blocked" && record.reviewReport);
-  reviewProducedBlocked.forEach(assertTerminalRecord);
-  const synchronized = records.filter((record) => record?.version === 3 && record.changeName === changeName && record.statusSync?.state === "synchronized" && ["done", "blocked"].includes(record.statusSync.target) && !(record.statusSync.target === "blocked" && record.reviewReport));
+  const nonterminalBlocked = records.filter((record) => record?.version === 3
+    && record.changeName === changeName
+    && record.statusSync?.state === "synchronized"
+    && record.statusSync.target === "blocked"
+    && (record.reviewReport || record.completionBasis === "trusted-host-verification"));
+  nonterminalBlocked.forEach(assertTerminalRecord);
+  const synchronized = records.filter((record) => record?.version === 3
+    && record.changeName === changeName
+    && record.statusSync?.state === "synchronized"
+    && ["done", "blocked"].includes(record.statusSync.target)
+    && !nonterminalBlocked.includes(record));
   if (synchronized.length > 0) {
     synchronized.forEach(assertTerminalRecord);
     assertLocal(new Set(synchronized.map(terminalIdentity)).size === 1, "STATUS_SYNC_AMBIGUOUS", `Conflicting synchronized Project status updates exist for ${changeName}`);
@@ -165,6 +173,6 @@ export async function findStatusSyncEvidence(root, changeName) {
 
   const plan = await findSuccessfulPlanRecord(root, changeName);
   assertLocal(plan.source?.kind === "github-issue", "STATUS_SYNC_SOURCE", "Status sync requires a GitHub-backed plan");
-  const allowBlockedCurrent = reviewProducedBlocked.some((record) => record.source?.itemId === plan.source.itemId && (record.parentPlanRunId === plan.runId || record.runId === plan.runId));
+  const allowBlockedCurrent = nonterminalBlocked.some((record) => record.source?.itemId === plan.source.itemId && (record.parentPlanRunId === plan.runId || record.runId === plan.runId));
   return Object.freeze({ kind: "plan", record: plan, allowBlockedCurrent });
 }

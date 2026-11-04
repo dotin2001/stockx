@@ -5,9 +5,10 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import sys
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from time import time_ns
 from uuid import UUID, uuid4
 
@@ -16,8 +17,10 @@ from sqlalchemy import select
 
 from app.admin import promote_admin, promote_supreme_admin
 from app.core.config import CheckoutMode, settings
+from app.core.security import hash_refresh_token
 from app.db.session import SessionLocal
-from app.models import Listing, Order, PaymentAttempt, StripeWebhookEvent
+from app.models import AccountChallenge, Listing, Order, PaymentAttempt, StripeWebhookEvent, User
+from app.services.auth import RESET_PURPOSE, VERIFICATION_PURPOSE
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -142,7 +145,7 @@ def smoke_public_api(client: httpx.Client) -> str:
             f"Missing: {sorted(missing_categories)}"
         )
 
-    products_response = request(client, "GET", "/api/v1/products", params={"limit": 20, "offset": 0})
+    products_response = request(client, "GET", "/api/v1/products", params={"limit": 100, "offset": 0})
     assert_status(products_response, 200, "GET /api/v1/products")
     products_page = response_json(products_response, "GET /api/v1/products")
     if not isinstance(products_page, dict) or not isinstance(products_page.get("items"), list):
@@ -220,6 +223,27 @@ def assert_refresh_cookie_present(client: httpx.Client, context: str) -> str:
     return token
 
 
+def create_local_smoke_challenge(email: str, *, purpose: str, lifetime_minutes: int) -> str:
+    """Create a local-only action challenge without exposing its raw token."""
+    raw_token = secrets.token_urlsafe(48)
+    now = datetime.now(UTC)
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.email == email))
+        if user is None:
+            fail("Could not locate the smoke account for its local action challenge.")
+        db.add(
+            AccountChallenge(
+                user_id=user.id,
+                purpose=purpose,
+                token_hash=hash_refresh_token(raw_token),
+                created_at=now,
+                expires_at=now + timedelta(minutes=lifetime_minutes),
+            )
+        )
+        db.commit()
+    return raw_token
+
+
 def smoke_auth(client: httpx.Client, user: SmokeUser) -> tuple[str, str]:
     register = request(
         client,
@@ -237,6 +261,29 @@ def smoke_auth(client: httpx.Client, user: SmokeUser) -> tuple[str, str]:
     assert_equal(register_body.get("token_type"), "bearer", "Registration token type mismatch.")
     assert_equal(register_body.get("user", {}).get("email"), user.email, "Registered user email mismatch.")
     registered_refresh = assert_refresh_cookie_present(client, "Registration")
+
+    verification_request = request(
+        client,
+        "POST",
+        "/api/v1/auth/verification/request",
+        json={"email": user.email},
+    )
+    assert_status(verification_request, 202, "POST /api/v1/auth/verification/request")
+    verification_token = create_local_smoke_challenge(
+        user.email,
+        purpose=VERIFICATION_PURPOSE,
+        lifetime_minutes=settings.verification_token_expire_minutes,
+    )
+    verified = request(
+        client,
+        "POST",
+        "/api/v1/auth/verification/confirm",
+        json={"token": verification_token},
+    )
+    assert_status(verified, 200, "POST /api/v1/auth/verification/confirm")
+    verified_body = response_json(verified, "email verification")
+    if not isinstance(verified_body, dict) or verified_body.get("is_verified") is not True:
+        fail("Email verification did not expose the verified account state.")
 
     login = request(
         client,
@@ -274,7 +321,12 @@ def smoke_auth(client: httpx.Client, user: SmokeUser) -> tuple[str, str]:
     if new_refresh == old_refresh:
         fail("Refresh should rotate the refresh cookie value.")
 
-    replay = request(client, "POST", "/api/v1/auth/refresh", cookies={REFRESH_COOKIE_NAME: old_refresh})
+    replay = request(
+        client,
+        "POST",
+        "/api/v1/auth/refresh",
+        headers={"Cookie": f"{REFRESH_COOKIE_NAME}={old_refresh}"},
+    )
     assert_status(replay, 401, "Replay old refresh token")
 
     logout = request(client, "POST", "/api/v1/auth/logout")
@@ -286,7 +338,7 @@ def smoke_auth(client: httpx.Client, user: SmokeUser) -> tuple[str, str]:
         client,
         "POST",
         "/api/v1/auth/refresh",
-        cookies={REFRESH_COOKIE_NAME: new_refresh},
+        headers={"Cookie": f"{REFRESH_COOKIE_NAME}={new_refresh}"},
     )
     assert_status(reuse_logged_out_session, 401, "Refresh after logout")
 
@@ -311,7 +363,69 @@ def smoke_auth(client: httpx.Client, user: SmokeUser) -> tuple[str, str]:
     if refreshed_access_token == marketplace_access_token:
         fail("Marketplace login should issue a fresh access token.")
 
-    return marketplace_access_token, new_refresh
+    marketplace_refresh = assert_refresh_cookie_present(client, "Marketplace login")
+    reset_request = request(
+        client,
+        "POST",
+        "/api/v1/auth/password-reset/request",
+        json={"email": user.email},
+    )
+    assert_status(reset_request, 202, "POST /api/v1/auth/password-reset/request")
+    reset_token = create_local_smoke_challenge(
+        user.email,
+        purpose=RESET_PURPOSE,
+        lifetime_minutes=settings.password_reset_token_expire_minutes,
+    )
+    restored_password = f"{user.password}-restored"
+    reset = request(
+        client,
+        "POST",
+        "/api/v1/auth/password-reset/confirm",
+        json={"token": reset_token, "new_password": restored_password},
+    )
+    assert_status(reset, 200, "POST /api/v1/auth/password-reset/confirm")
+    revoked_after_reset = request(
+        client,
+        "POST",
+        "/api/v1/auth/refresh",
+        headers={"Cookie": f"{REFRESH_COOKIE_NAME}={marketplace_refresh}"},
+    )
+    assert_status(revoked_after_reset, 401, "Refresh revoked by password reset")
+    old_password_login = request(
+        client,
+        "POST",
+        "/api/v1/auth/login",
+        json={"email": user.email, "password": user.password},
+    )
+    assert_status(old_password_login, 401, "Login with old password after reset")
+    restored_login = request(
+        client,
+        "POST",
+        "/api/v1/auth/login",
+        json={"email": user.email, "password": restored_password},
+    )
+    assert_status(restored_login, 200, "Login with reset password")
+    restored_body = response_json(restored_login, "restored login")
+    if not isinstance(restored_body, dict) or not isinstance(restored_body.get("access_token"), str):
+        fail("Restored login did not return an access token.")
+    restored_access_token = restored_body["access_token"]
+    logout_all_refresh = assert_refresh_cookie_present(client, "Restored login")
+    logout_all = request(
+        client,
+        "POST",
+        "/api/v1/auth/logout-all",
+        headers={"Authorization": f"Bearer {restored_access_token}"},
+    )
+    assert_status(logout_all, 204, "POST /api/v1/auth/logout-all")
+    revoked_after_logout_all = request(
+        client,
+        "POST",
+        "/api/v1/auth/refresh",
+        headers={"Cookie": f"{REFRESH_COOKIE_NAME}={logout_all_refresh}"},
+    )
+    assert_status(revoked_after_logout_all, 401, "Refresh revoked by logout-all")
+
+    return restored_access_token, new_refresh
 
 
 def smoke_protected_marketplace(client: httpx.Client, access_token: str, product_id: str) -> None:
@@ -917,7 +1031,7 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str
         fail("Admin listing cancel response should be an object.")
     assert_equal(cancelled_body.get("status"), "cancelled", "Admin listing cancel status mismatch.")
 
-    products = request(client, "GET", "/api/v1/admin/products", params={"limit": 20, "offset": 0}, headers=headers)
+    products = request(client, "GET", "/api/v1/admin/products", params={"limit": 100, "offset": 0}, headers=headers)
     assert_status(products, 200, "GET /api/v1/admin/products")
     products_body = response_json(products, "admin product list")
     if not isinstance(products_body, dict) or not isinstance(products_body.get("items"), list):

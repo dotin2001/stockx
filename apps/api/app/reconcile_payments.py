@@ -11,6 +11,7 @@ from app.db.session import SessionLocal
 from app.payments import CheckoutSessionProvider, StripeCheckoutSessionProvider
 from app.services.payment_checkout import reconcile_stale_attempts
 from app.services.stripe_webhooks import reprocess_stripe_event
+from app.services.observability import emit_event
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -62,6 +63,16 @@ def main(
     for outcome in outcomes:
         detail = f" ({outcome.detail})" if outcome.detail else ""
         print(f"{outcome.attempt_id}: {outcome.outcome}{detail}")
+    outcome_counts: dict[str, int] = {}
+    for outcome in outcomes:
+        outcome_counts[outcome.outcome] = outcome_counts.get(outcome.outcome, 0) + 1
+    emit_event(
+        "payment_reconciliation_completed",
+        examined=len(outcomes),
+        recovered=outcome_counts.get("paid", 0) + outcome_counts.get("processing", 0),
+        failed=outcome_counts.get("failed", 0) + outcome_counts.get("provider_unavailable", 0),
+        still_stale=outcome_counts.get("still_open", 0),
+    )
     print(f"Reconciled {len(outcomes)} payment attempt(s).")
     return 0
 

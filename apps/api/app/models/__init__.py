@@ -1,3 +1,5 @@
+from app.models.account_challenge import AccountChallenge
+from app.models.administrative_audit import AdministrativeAudit
 from app.models.cart import CartItem
 from app.models.category import Category
 from app.models.customer_message import CustomerAdminMessage
@@ -10,6 +12,8 @@ from app.models.user import User
 from app.models.watchlist import WatchlistItem
 
 __all__ = [
+    "AccountChallenge",
+    "AdministrativeAudit",
     "Category",
     "CartItem",
     "Listing",

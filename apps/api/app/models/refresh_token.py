@@ -19,6 +19,7 @@ class RefreshToken(Base):
         index=True,
     )
     token_hash: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    family_id: Mapped[UUID] = mapped_column(nullable=False, default=uuid4, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     replaced_by_token_id: Mapped[UUID | None] = mapped_column(

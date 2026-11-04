@@ -163,8 +163,8 @@ def test_settings_parse_environment_values(monkeypatch) -> None:
 
     settings = Settings()
 
-    assert settings.database_url == "postgresql+psycopg://api:api@localhost:5433/api"
-    assert settings.secret_key == "test-secret"
+    assert settings.database_url.get_secret_value() == "postgresql+psycopg://api:api@localhost:5433/api"
+    assert settings.secret_key.get_secret_value() == "test-secret"
     assert settings.access_token_expire_minutes == 5
     assert settings.refresh_token_expire_days == 9
     assert settings.refresh_cookie_name == "refresh_test"
@@ -434,7 +434,10 @@ def test_auth_register_login_me_refresh_and_logout(client: TestClient, db_sessio
     assert_public_user_roles(refresh.json()["user"], is_admin=False, is_supreme_admin=False)
     assert client.cookies.get("stockx_refresh") != old_refresh
 
-    replay = client.post("/api/v1/auth/refresh", cookies={"stockx_refresh": old_refresh})
+    replay = client.post(
+        "/api/v1/auth/refresh",
+        headers={"Cookie": f"stockx_refresh={old_refresh}"},
+    )
     assert replay.status_code == 401
 
     logout = client.post("/api/v1/auth/logout")

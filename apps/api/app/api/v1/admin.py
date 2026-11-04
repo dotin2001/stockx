@@ -1,9 +1,11 @@
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Request, status
 
 from app.api.deps import CurrentAdminUser, CurrentSupremeAdminUser, DbSession
 from app.schemas.admin_user import AdminUserPage, AdminUserPromoteByEmail, AdminUserRead
+from app.schemas.administrative_audit import AdministrativeAuditPage, AdministrativeAuditRead
 from app.schemas.customer_message import CustomerMessagePage, CustomerMessageRead
 from app.schemas.listing import (
     AdminListingCreate,
@@ -26,6 +28,7 @@ from app.schemas.order import AdminOrderPage, OrderRead, OrderStatus, PaymentSta
 from app.services import admin_orders
 from app.services import admin_products
 from app.services import admin_users
+from app.services import administrative_audit
 from app.services import customer_messages
 from app.services import listings as listing_service
 
@@ -77,24 +80,45 @@ def list_users(
 @router.post("/users/promote", response_model=AdminUserRead)
 def promote_user_by_email(
     payload: AdminUserPromoteByEmail,
+    request: Request,
     db: DbSession,
-    _admin: CurrentSupremeAdminUser,
+    admin: CurrentSupremeAdminUser,
 ) -> AdminUserRead:
-    user = admin_users.promote_user_by_email(db, email=payload.email)
+    user = admin_users.promote_user_by_email(
+        db,
+        email=payload.email,
+        actor=admin,
+        request_id=request.state.request_id,
+    )
     db.commit()
     return AdminUserRead.model_validate(user)
 
 
 @router.post("/users/{user_id}/promote", response_model=AdminUserRead)
-def promote_user_by_id(user_id: UUID, db: DbSession, _admin: CurrentSupremeAdminUser) -> AdminUserRead:
-    user = admin_users.promote_user_by_id(db, user_id=user_id)
+def promote_user_by_id(
+    user_id: UUID,
+    request: Request,
+    db: DbSession,
+    admin: CurrentSupremeAdminUser,
+) -> AdminUserRead:
+    user = admin_users.promote_user_by_id(
+        db,
+        user_id=user_id,
+        actor=admin,
+        request_id=request.state.request_id,
+    )
     db.commit()
     return AdminUserRead.model_validate(user)
 
 
 @router.post("/users/{user_id}/demote", response_model=AdminUserRead)
-def demote_user(user_id: UUID, db: DbSession, admin: CurrentSupremeAdminUser) -> AdminUserRead:
-    user = admin_users.demote_user(db, user_id=user_id, actor=admin)
+def demote_user(user_id: UUID, request: Request, db: DbSession, admin: CurrentSupremeAdminUser) -> AdminUserRead:
+    user = admin_users.demote_user(
+        db,
+        user_id=user_id,
+        actor=admin,
+        request_id=request.state.request_id,
+    )
     db.commit()
     return AdminUserRead.model_validate(user)
 
@@ -227,6 +251,7 @@ def create_product_listing(
 def adjust_listing_inventory_quantity(
     listing_id: UUID,
     payload: ListingQuantityAdjustment,
+    request: Request,
     db: DbSession,
     admin: CurrentSupremeAdminUser,
 ) -> ListingManagementRead:
@@ -235,6 +260,7 @@ def adjust_listing_inventory_quantity(
         listing_id=listing_id,
         adjustment=payload.adjustment,
         actor=admin,
+        request_id=request.state.request_id,
     )
     db.commit()
     return ListingManagementRead.model_validate(listing)
@@ -244,6 +270,7 @@ def adjust_listing_inventory_quantity(
 def update_listing_inventory_status(
     listing_id: UUID,
     payload: ListingStatusUpdate,
+    request: Request,
     db: DbSession,
     admin: CurrentSupremeAdminUser,
 ) -> ListingManagementRead:
@@ -252,6 +279,7 @@ def update_listing_inventory_status(
         listing_id=listing_id,
         next_status=payload.status,
         actor=admin,
+        request_id=request.state.request_id,
     )
     db.commit()
     return ListingManagementRead.model_validate(listing)
@@ -261,6 +289,7 @@ def update_listing_inventory_status(
 def update_listing_inventory(
     listing_id: UUID,
     payload: ListingInventoryUpdate,
+    request: Request,
     db: DbSession,
     admin: CurrentSupremeAdminUser,
 ) -> ListingManagementRead:
@@ -273,6 +302,7 @@ def update_listing_inventory(
         available_quantity=payload.available_quantity,
         next_status=payload.status,
         actor=admin,
+        request_id=request.state.request_id,
     )
     db.commit()
     return ListingManagementRead.model_validate(listing)
@@ -307,3 +337,35 @@ def delete_variant(variant_id: UUID, db: DbSession, _admin: CurrentAdminUser) ->
     admin_products.delete_variant(db, variant_id=variant_id)
     db.commit()
     return None
+
+
+@router.get("/audits", response_model=AdministrativeAuditPage)
+def list_administrative_audits(
+    db: DbSession,
+    _admin: CurrentAdminUser,
+    actor_user_id: UUID | None = Query(default=None),
+    action: str | None = Query(default=None, min_length=1, max_length=80),
+    target_type: str | None = Query(default=None, min_length=1, max_length=64),
+    target_id: UUID | None = Query(default=None),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> AdministrativeAuditPage:
+    records, total = administrative_audit.list_audits(
+        db,
+        actor_user_id=actor_user_id,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        created_from=created_from,
+        created_to=created_to,
+        limit=limit,
+        offset=offset,
+    )
+    return AdministrativeAuditPage(
+        items=[AdministrativeAuditRead.model_validate(record) for record in records],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )

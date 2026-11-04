@@ -258,7 +258,7 @@ test("status-sync evidence prioritizes pending, recognizes synchronized, and fal
   await writeRunRecord(reviewable, plan);
   await writeRunRecord(reviewable, { ...pending, runId: "review-result", mode: "sync-status", reviewReport: { entries: [] }, statusSync: { state: "synchronized", target: "review", value: "Review" } });
   assert.equal((await findStatusSyncEvidence(reviewable, githubTask.changeName)).kind, "plan");
-  await writeRunRecord(reviewable, { ...pending, runId: "blocked-review", mode: "sync-status", reviewReport: { entries: [{ result: "BLOCKED" }] }, statusSync: { state: "synchronized", target: "blocked", value: "Blocked" } });
+  await writeRunRecord(reviewable, { ...pending, runId: "blocked-review", mode: "sync-status", completionBasis: "trusted-host-verification", hostChecks: [{ source: "check", id: "check:npm-test", label: "npm test", result: "BLOCKED", evidence: ["npm unavailable"], remainingWork: ["Restore npm"] }], reviewReport: null, statusSync: { state: "synchronized", target: "blocked", value: "Blocked" } });
   assert.equal((await findStatusSyncEvidence(reviewable, githubTask.changeName)).allowBlockedCurrent, true);
 
   const ambiguous = await tempDirectory();

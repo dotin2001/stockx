@@ -49,7 +49,7 @@ def _discovery_query(
             offset=offset,
         )
     except ValidationError as exc:
-        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "validation_error", "Request validation failed.") from exc
+        raise APIError(status.HTTP_422_UNPROCESSABLE_CONTENT, "validation_error", "Request validation failed.") from exc
 
 
 def _product_page(result: catalog_service.ProductDiscoveryResult) -> ProductPage:

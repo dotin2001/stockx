@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.errors import APIError
 from app.models import Listing, Product, ProductVariant, User
+from app.services.administrative_audit import write_audit
 LISTING_LOAD_OPTIONS = (selectinload(Listing.product).selectinload(Product.category),)
 MANAGED_LISTING_LOAD_OPTIONS = (
     selectinload(Listing.product).selectinload(Product.category),
@@ -66,11 +67,11 @@ def create_managed_listing(
 ) -> Listing:
     _require_supreme_admin(actor)
     if price_cents <= 0:
-        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_listing_price", "Listing price must be greater than zero.")
+        raise APIError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_listing_price", "Listing price must be greater than zero.")
     if available_quantity < 0:
-        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_available_quantity", "Available quantity cannot be negative.")
+        raise APIError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_available_quantity", "Available quantity cannot be negative.")
     if listing_status not in LISTING_STATUSES:
-        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_listing_status", "Listing status is invalid.")
+        raise APIError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_listing_status", "Listing status is invalid.")
 
     product = db.get(Product, product_id)
     if product is None:
@@ -191,11 +192,13 @@ def adjust_managed_listing_quantity(
     listing_id: UUID,
     adjustment: int,
     actor: User,
+    request_id: str = "system",
 ) -> Listing:
     _require_supreme_admin(actor)
     if adjustment == 0:
-        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_quantity_adjustment", "Quantity adjustment must be non-zero.")
+        raise APIError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_quantity_adjustment", "Quantity adjustment must be non-zero.")
 
+    before_quantity = db.scalar(select(Listing.available_quantity).where(Listing.id == listing_id))
     result = db.execute(
         update(Listing)
         .where(
@@ -215,7 +218,18 @@ def adjust_managed_listing_quantity(
             "Inventory quantity cannot be reduced below zero.",
         )
     db.flush()
-    return _load_managed_listing(db, listing_id)
+    listing = _load_managed_listing(db, listing_id)
+    write_audit(
+        db,
+        actor=actor,
+        action="listing.inventory.quantity_changed",
+        target_type="listing",
+        target_id=listing.id,
+        request_id=request_id,
+        before={"available_quantity": before_quantity},
+        after={"available_quantity": listing.available_quantity},
+    )
+    return listing
 
 
 def change_managed_listing_status(
@@ -224,15 +238,28 @@ def change_managed_listing_status(
     listing_id: UUID,
     next_status: str,
     actor: User,
+    request_id: str = "system",
 ) -> Listing:
     _require_supreme_admin(actor)
     if next_status not in LISTING_STATUSES:
-        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_listing_status", "Listing status is invalid.")
+        raise APIError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_listing_status", "Listing status is invalid.")
 
     listing = _load_managed_listing(db, listing_id)
+    before_status = listing.status
     listing.status = next_status
     db.flush()
-    return _load_managed_listing(db, listing.id)
+    listing = _load_managed_listing(db, listing.id)
+    write_audit(
+        db,
+        actor=actor,
+        action="listing.inventory.status_changed",
+        target_type="listing",
+        target_id=listing.id,
+        request_id=request_id,
+        before={"status": before_status},
+        after={"status": listing.status},
+    )
+    return listing
 
 
 def update_managed_listing_inventory(
@@ -245,16 +272,24 @@ def update_managed_listing_inventory(
     available_quantity: int,
     next_status: str,
     actor: User,
+    request_id: str = "system",
 ) -> Listing:
     _require_supreme_admin(actor)
     if price_cents <= 0:
-        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_listing_price", "Listing price must be greater than zero.")
+        raise APIError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_listing_price", "Listing price must be greater than zero.")
     if available_quantity < 0:
-        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_available_quantity", "Available quantity cannot be negative.")
+        raise APIError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_available_quantity", "Available quantity cannot be negative.")
     if next_status not in LISTING_STATUSES:
-        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_listing_status", "Listing status is invalid.")
+        raise APIError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_listing_status", "Listing status is invalid.")
 
     listing = _load_managed_listing(db, listing_id)
+    before = {
+        "product_variant_id": str(listing.product_variant_id) if listing.product_variant_id else None,
+        "price_cents": listing.price_cents,
+        "currency": listing.currency,
+        "available_quantity": listing.available_quantity,
+        "status": listing.status,
+    }
     if product_variant_id is not None:
         variant = db.get(ProductVariant, product_variant_id)
         if variant is None or variant.product_id != listing.product_id:
@@ -266,4 +301,21 @@ def update_managed_listing_inventory(
     listing.available_quantity = available_quantity
     listing.status = next_status
     db.flush()
-    return _load_managed_listing(db, listing.id)
+    listing = _load_managed_listing(db, listing.id)
+    write_audit(
+        db,
+        actor=actor,
+        action="listing.inventory.updated",
+        target_type="listing",
+        target_id=listing.id,
+        request_id=request_id,
+        before=before,
+        after={
+            "product_variant_id": str(listing.product_variant_id) if listing.product_variant_id else None,
+            "price_cents": listing.price_cents,
+            "currency": listing.currency,
+            "available_quantity": listing.available_quantity,
+            "status": listing.status,
+        },
+    )
+    return listing

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, Index, String, func, text
+from datetime import datetime
+
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -16,6 +18,7 @@ class User(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_admin: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -35,6 +38,11 @@ class User(TimestampMixin, Base):
 
     refresh_tokens = relationship(
         "RefreshToken",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    account_challenges = relationship(
+        "AccountChallenge",
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -61,3 +69,7 @@ class User(TimestampMixin, Base):
     @property
     def is_seller(self) -> bool:
         return self.seller_profile is not None
+
+    @property
+    def is_verified(self) -> bool:
+        return self.verified_at is not None

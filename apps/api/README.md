@@ -8,7 +8,8 @@ This workspace contains the FastAPI backend for the store-owned selling site. It
 cd apps/api
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install uv
+uv sync --extra dev --frozen
 cp .env.example .env
 ```
 
@@ -88,7 +89,8 @@ quantity. Unrelated administrator-created variants and listings are preserved.
 Health:
 
 ```text
-GET    /health
+GET    /health  process liveness; never probes PostgreSQL
+GET    /ready   startup configuration and bounded PostgreSQL readiness
 ```
 
 Auth:
@@ -99,6 +101,11 @@ POST   /api/v1/auth/login
 GET    /api/v1/auth/me
 POST   /api/v1/auth/refresh
 POST   /api/v1/auth/logout
+POST   /api/v1/auth/logout-all
+POST   /api/v1/auth/verification/request
+POST   /api/v1/auth/verification/confirm
+POST   /api/v1/auth/password-reset/request
+POST   /api/v1/auth/password-reset/confirm
 ```
 
 Catalog:
@@ -233,6 +240,7 @@ GET    /api/v1/admin/users
 POST   /api/v1/admin/users/promote
 POST   /api/v1/admin/users/{id}/promote
 POST   /api/v1/admin/users/{id}/demote
+GET    /api/v1/admin/audits
 ```
 
 `GET /api/v1/admin/products` returns catalog products with inventory summaries
@@ -265,6 +273,61 @@ Authorization: Bearer <access_token>
 ```
 
 Refresh tokens are stored in the `stockx_refresh` HTTP-only cookie by default and are rotated on refresh.
+
+Refresh rotation is serialized in PostgreSQL and every session has a family.
+Reusing an already-replaced token revokes its active family; ordinary logout or
+expiry does not revoke unrelated families. Verification and password-reset
+tokens are single-use, expiring, and stored only as SHA-256 digests.
+
+## Production configuration
+
+Copy `.env.production.example` and supply secrets through the deployment secret
+store. `APP_ENVIRONMENT=production` rejects weak signing secrets, insecure or
+non-HTTP-only refresh cookies, wildcard/local/non-HTTPS CORS origins, a non-
+PostgreSQL database, in-process rate limiting, capture delivery, mixed Stripe
+test/live settings, and the fake provider. Validation errors name settings but
+do not include their secret values.
+
+Production authentication limiting uses the Redis adapter and privacy-preserving
+HMAC keys. Configure `TRUSTED_PROXY_ADDRESSES` only with immediate proxy IPs;
+otherwise forwarded client headers are ignored. Sensitive delivery endpoints
+fail closed when the shared limiter is unavailable. The vendor-neutral HTTPS
+delivery webhook receives verification/reset actions. The optional error-
+reporter webhook receives only request ID, route template, method, and exception
+type and is bounded by `ERROR_REPORTER_TIMEOUT_SECONDS`.
+
+Every response includes `X-Request-ID`. A caller ID must be 1–64 ASCII letters,
+digits, dot, underscore, or hyphen; invalid values are replaced. Structured logs
+use route templates and allowlisted fields and never include request bodies,
+cookies, credentials, action tokens, Stripe secrets, or webhook payloads.
+
+## Locked dependencies
+
+`pyproject.toml` declares direct dependencies and `uv.lock` pins production and
+development transitives for Python 3.12. Install and test without solving:
+
+```bash
+uv sync --extra dev --frozen
+uv run --extra dev pytest
+```
+
+After an intentional dependency edit, run `uv lock`, review `uv.lock`, then run
+`npm run api:lock:check` from the repository root. The check fails when the lock
+is stale. Deprecation warnings are errors in the supported backend suite.
+
+## Payment health and audit operations
+
+Run `stockx-api-payment-health --stale-minutes 5` for bounded JSON counts of
+failed webhooks/attempts, stale attempts, and overdue reservations. Exit 0 is
+healthy; degraded or database-error outcomes are nonzero and never include
+customer data, provider payloads, URLs, or credentials. Reconciliation emits
+structured examined/recovered/failed/still-stale counts.
+
+Authorized administrators can query `/api/v1/admin/audits` newest-first with
+bounded actor, action, target, time, limit, and offset filters. There are no
+audit mutation endpoints. Role and inventory audit rows are written in the same
+transaction as the privileged change and contain only allowlisted before/after
+facts plus actor, target, timestamp, and request ID.
 
 ## Admin Bootstrap
 
@@ -352,7 +415,9 @@ or production database.
 
 ```bash
 cd apps/api
-pytest
+uv sync --extra dev --frozen
+uv lock --check
+uv run --extra dev pytest
 alembic upgrade head
 python -m app.db.seed
 python -m app.db.seed
@@ -363,6 +428,12 @@ Optional destructive local rollback:
 ```bash
 alembic downgrade base
 ```
+
+For this auth/audit migration, deploy schema first, then compatible application
+code. Existing refresh chains are deterministically grouped before `family_id`
+becomes non-null; cross-user/self legacy links are detached. To roll back,
+restore the prior compatible application first, disable verification/reset, and
+expect current sessions to require login before downgrading the migration.
 
 The payment migration adds reservation timestamps, `payment_attempts`, and
 `stripe_webhook_events`. Before downgrading it, disable new Stripe sessions but

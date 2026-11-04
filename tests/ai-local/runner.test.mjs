@@ -345,7 +345,7 @@ test("status sync retry invokes neither Codex nor patch application", async () =
   assert.deepEqual(setup.calls, []);
 });
 
-test("status sync reviews the complete snapshot before persisting and applying Done", async () => {
+test("status sync trusts the complete host-check set before persisting and applying Done without semantic review", async () => {
   const setup = await commonHarness();
   const fixture = githubReviewFixture();
   const implementationPaths = [`openspec/changes/${fixture.parent.changeName}/tasks.md`, "docs/pilot.md"];
@@ -363,7 +363,7 @@ test("status sync reviews the complete snapshot before persisting and applying D
         assert.equal(options.applyTestEnvironment.TEST_POSTGRES_DATABASE_URL, testUrl);
         return [{ source: "check", id: "check:git-diff-check", label: "git diff --check", result: "PASS", evidence: ["check passed"], remainingWork: [] }];
       },
-      runReview: async () => { order.push("review"); return passingReviewReport(); },
+      runReview: async () => { throw new Error("semantic review must not run"); },
       assertReviewSnapshot: async () => { order.push("recheck"); },
       refreshIssue: async () => { order.push("issue-refresh"); return fixture.snapshot; },
       prepareStatus: async ({ source: preparedSource, target }) => {
@@ -382,35 +382,42 @@ test("status sync reviews the complete snapshot before persisting and applying D
     },
   });
   assert.equal(result.projectStatus, "Done");
-  assert.equal(result.completionBasis, "reviewed-current-state");
-  assert.deepEqual(order, ["snapshot", "checks", "review", "recheck", "issue-refresh", "prepare", "update"]);
+  assert.equal(result.completionBasis, "trusted-host-verification");
+  assert.deepEqual(order, ["snapshot", "checks", "recheck", "issue-refresh", "prepare", "update"]);
   assert.deepEqual(result.paths, implementationPaths);
   assert.equal(setup.records.at(-1).statusSync.state, "synchronized");
-  assert.equal(setup.records.at(-1).completionBasis, "reviewed-current-state");
+  assert.equal(setup.records.at(-1).completionBasis, "trusted-host-verification");
   assert.deepEqual(setup.records.at(-1).verification, ["git diff --check: PASS"]);
   assert.equal(setup.records.at(-1).derivedTarget, "done");
-  assert.equal(setup.records.at(-1).reviewReport.entries[0].result, "PASS");
+  assert.equal(setup.records.at(-1).reviewReport, null);
+  assert.equal(setup.records.at(-1).hostChecks[0].result, "PASS");
   assert.doesNotMatch(JSON.stringify(setup.records), /sentinel-user|sentinel-password|TEST_POSTGRES_DATABASE_URL/);
   assert.deepEqual(setup.calls, []);
 });
 
-test("status sync routes a failed requirement to Review", async () => {
+test("status sync routes a failed trusted host check to Review", async () => {
   const setup = await commonHarness();
   const fixture = githubReviewFixture();
   const targets = [];
-  const failed = passingReviewReport();
-  failed.entries[0] = { ...failed.entries[0], result: "FAIL", remainingWork: ["Implement the missing behavior"] };
   const result = await runLocalWorkflow({
     mode: "sync-status", changeName: fixture.parent.changeName, cwd: setup.root, io: memoryIo().io,
     dependencies: freshReviewDependencies(setup, fixture, {
-      runReview: async () => failed,
+      collectReviewChecks: async () => [{ source: "check", id: "check:npm-test", label: "npm test", result: "FAIL", evidence: ["Required check executed and failed"], remainingWork: ["Correct the failure"] }],
+      runReview: async () => { throw new Error("semantic review must not run"); },
       prepareStatus: async ({ target }) => { targets.push(`prepare:${target}`); return { effectiveTarget: target, fallbackReason: null }; },
       updateStatus: async ({ target }) => { targets.push(`update:${target}`); return { status: "Review" }; },
     }),
   });
   assert.equal(result.projectStatus, "Review");
   assert.equal(result.derivedTarget, "review");
+  assert.equal(result.report, null);
   assert.deepEqual(targets, ["prepare:review", "update:review"]);
+  const record = setup.records.at(-1);
+  assert.equal(record.completionBasis, "trusted-host-verification");
+  assert.equal(record.hostChecks[0].result, "FAIL");
+  assert.equal(record.reviewReport, null);
+  assert.equal(record.derivedTarget, "review");
+  assert.equal(record.effectiveTarget, "review");
 });
 
 test("reviewed status sync leaves one exact pending transition when GitHub update fails", async () => {
@@ -427,7 +434,7 @@ test("reviewed status sync leaves one exact pending transition when GitHub updat
   assert.deepEqual(final.statusSync, { state: "pending", target: "done", value: "Done" });
 });
 
-test("unavailable semantic review derives Blocked and records Review fallback", async () => {
+test("blocked trusted host verification derives Blocked and records Review fallback", async () => {
   const setup = await commonHarness();
   const fixture = githubReviewFixture();
   const result = await runLocalWorkflow({
@@ -436,7 +443,8 @@ test("unavailable semantic review derives Blocked and records Review fallback", 
     cwd: setup.root,
     io: memoryIo().io,
     dependencies: freshReviewDependencies(setup, fixture, {
-      runReview: async () => { throw new LocalRunError("COMMAND_START", "raw issue body must not leak"); },
+      collectReviewChecks: async () => [{ source: "check", id: "check:python-pytest", label: "python -m pytest", result: "BLOCKED", evidence: ["Required PostgreSQL verification environment is unavailable"], remainingWork: ["Restore the check prerequisite and retry"] }],
+      runReview: async () => { throw new Error("semantic review must not run"); },
       prepareStatus: async ({ target, allowReviewFallback }) => {
         assert.equal(target, "blocked");
         assert.equal(allowReviewFallback, true);
@@ -452,7 +460,13 @@ test("unavailable semantic review derives Blocked and records Review fallback", 
   assert.equal(result.derivedTarget, "blocked");
   assert.equal(result.effectiveTarget, "review");
   assert.match(result.fallbackReason, /using Review/);
-  assert.doesNotMatch(JSON.stringify(setup.records), /raw issue body must not leak/);
+  assert.equal(result.report, null);
+  const record = setup.records.at(-1);
+  assert.equal(record.completionBasis, "trusted-host-verification");
+  assert.equal(record.hostChecks[0].result, "BLOCKED");
+  assert.equal(record.reviewReport, null);
+  assert.equal(record.derivedTarget, "blocked");
+  assert.equal(record.effectiveTarget, "review");
 });
 
 test("snapshot mutation stops before Project preparation or mutation", async () => {
@@ -472,6 +486,54 @@ test("snapshot mutation stops before Project preparation or mutation", async () 
   }), (error) => error.code === "REVIEW_STALE");
   assert.equal(remoteCalls, 0);
   assert.equal(setup.records.at(-1).statusSync, null);
+});
+
+test("linked issue mutation after host checks stops before Project preparation or mutation", async () => {
+  const setup = await commonHarness();
+  const fixture = githubReviewFixture();
+  let remoteCalls = 0;
+  await assert.rejects(() => runLocalWorkflow({
+    mode: "sync-status",
+    changeName: fixture.parent.changeName,
+    cwd: setup.root,
+    io: memoryIo().io,
+    dependencies: freshReviewDependencies(setup, fixture, {
+      refreshIssue: async () => ({ ...fixture.snapshot, body: "Acceptance criteria changed after checks." }),
+      prepareStatus: async () => { remoteCalls += 1; },
+      updateStatus: async () => { remoteCalls += 1; },
+    }),
+  }), (error) => error.code === "TASK_IDENTITY");
+  assert.equal(remoteCalls, 0);
+  assert.equal(setup.records.at(-1).statusSync, null);
+});
+
+test("corrected or unblocked host checks can advance a nonterminal result to Done", async () => {
+  const setup = await commonHarness();
+  const fixture = githubReviewFixture();
+  const result = await runLocalWorkflow({
+    mode: "sync-status",
+    changeName: fixture.parent.changeName,
+    cwd: setup.root,
+    io: memoryIo().io,
+    dependencies: freshReviewDependencies(setup, fixture, {
+      preflightStatusSync: async () => ({
+        root: setup.root,
+        evidence: { kind: "plan", record: fixture.parent, allowBlockedCurrent: true },
+        baseSha,
+        branch: "main",
+        issueTask: fixture.issueTask,
+        applyTestEnvironment: {},
+        applyTestEnvironmentError: null,
+      }),
+      prepareStatus: async ({ target, allowBlockedCurrent }) => {
+        assert.equal(target, "done");
+        assert.equal(allowBlockedCurrent, true);
+        return { effectiveTarget: "done", fallbackReason: null };
+      },
+    }),
+  });
+  assert.equal(result.projectStatus, "Done");
+  assert.equal(result.derivedTarget, "done");
 });
 
 test("provenance failure performs no checks, review, pending intent, or Project mutation", async () => {
@@ -516,7 +578,7 @@ test("already synchronized status is idempotent and skips checkout verification 
   assert.equal(result.completionBasis, "synchronized-result");
 });
 
-test("fresh review reaches Done despite unrelated failed apply history", async () => {
+test("fresh trusted verification reaches Done despite unrelated failed apply history", async () => {
   const setup = await commonHarness();
   const fixture = githubReviewFixture();
   const result = await runLocalWorkflow({
@@ -527,8 +589,9 @@ test("fresh review reaches Done despite unrelated failed apply history", async (
     dependencies: freshReviewDependencies(setup, fixture),
   });
   assert.equal(result.projectStatus, "Done");
-  assert.equal(result.completionBasis, "reviewed-current-state");
-  assert.equal(result.report.entries.every((entry) => entry.result === "PASS"), true);
+  assert.equal(result.completionBasis, "trusted-host-verification");
+  assert.equal(result.hostChecks.every((entry) => entry.result === "PASS"), true);
+  assert.equal(result.report, null);
 });
 
 test("ambiguous status evidence records a technical refusal and never calls GitHub", async () => {

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.errors import APIError
 from app.models import User
 from app.services.auth import normalize_email
+from app.services.administrative_audit import write_audit
 
 
 def _user_not_found() -> APIError:
@@ -42,23 +43,33 @@ def get_user(db: Session, user_id: UUID) -> User:
     return user
 
 
-def promote_user_by_id(db: Session, *, user_id: UUID) -> User:
+def promote_user_by_id(db: Session, *, user_id: UUID, actor: User | None = None, request_id: str = "system") -> User:
     user = get_user(db, user_id)
+    before = user.is_admin
     user.is_admin = True
     db.flush()
+    if actor is not None and before is not True:
+        write_audit(
+            db,
+            actor=actor,
+            action="user.admin.promoted",
+            target_type="user",
+            target_id=user.id,
+            request_id=request_id,
+            before={"is_admin": before},
+            after={"is_admin": True},
+        )
     return user
 
 
-def promote_user_by_email(db: Session, *, email: str) -> User:
+def promote_user_by_email(db: Session, *, email: str, actor: User | None = None, request_id: str = "system") -> User:
     user = db.scalar(select(User).where(User.email == normalize_email(email)))
     if user is None:
         raise _user_not_found()
-    user.is_admin = True
-    db.flush()
-    return user
+    return promote_user_by_id(db, user_id=user.id, actor=actor, request_id=request_id)
 
 
-def demote_user(db: Session, *, user_id: UUID, actor: User) -> User:
+def demote_user(db: Session, *, user_id: UUID, actor: User, request_id: str = "system") -> User:
     user = get_user(db, user_id)
     if user.id == actor.id:
         raise APIError(
@@ -72,6 +83,18 @@ def demote_user(db: Session, *, user_id: UUID, actor: User) -> User:
             "supreme_admin_protected",
             "Supreme-admin access cannot be changed through in-app user management.",
         )
+    before = user.is_admin
     user.is_admin = False
     db.flush()
+    if before is not False:
+        write_audit(
+            db,
+            actor=actor,
+            action="user.admin.demoted",
+            target_type="user",
+            target_id=user.id,
+            request_id=request_id,
+            before={"is_admin": before},
+            after={"is_admin": False},
+        )
     return user

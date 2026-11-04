@@ -8,15 +8,10 @@ import { formatApplySuccess, formatBlocked, formatPlanReady, formatStatusSync } 
 import { preflight, preflightApply, preflightStatusSync } from "./preflight.mjs";
 import {
   assertReviewSnapshotUnchanged,
-  blockedReviewReport,
-  cleanupReviewContext,
-  collectRequiredReviewInventory,
   collectReviewChecks,
   collectReviewSnapshot,
-  createReviewContext,
-  deriveReviewTarget,
-  sanitizeReviewReport,
-  validateReviewReport,
+  deriveHostCheckTarget,
+  sanitizeHostChecks,
 } from "./review.mjs";
 import { createRunId, initialLinkedRunRecord, initialRunRecord, updateRunRecord, writeRunRecord } from "./run-record.mjs";
 import { runCodexStage } from "./codex.mjs";
@@ -269,11 +264,6 @@ async function runStatusSyncWorkflow(options) {
   const preflightFn = dependencies.preflightStatusSync || preflightStatusSync;
   const collectSnapshotFn = dependencies.collectReviewSnapshot || collectReviewSnapshot;
   const collectChecksFn = dependencies.collectReviewChecks || collectReviewChecks;
-  const collectInventoryFn = dependencies.collectReviewInventory || collectRequiredReviewInventory;
-  const createReviewContextFn = dependencies.createReviewContext || createReviewContext;
-  const cleanupReviewContextFn = dependencies.cleanupReviewContext || cleanupReviewContext;
-  const reviewStageFn = dependencies.runReview || dependencies.runStage || runCodexStage;
-  const validateReviewFn = dependencies.validateReviewReport || validateReviewReport;
   const assertSnapshotFn = dependencies.assertReviewSnapshot || assertReviewSnapshotUnchanged;
   const refreshIssueFn = dependencies.refreshIssue || refreshRecordedIssue;
   const prepareStatusFn = dependencies.prepareStatus || prepareProjectStatus;
@@ -284,7 +274,13 @@ async function runStatusSyncWorkflow(options) {
   const evidence = context.evidence || (context.pendingRecord ? { kind: "pending", record: context.pendingRecord } : context.diagnosticRecord ? { kind: "refusal", record: context.diagnosticRecord } : null);
   if (!evidence?.record) throw new LocalRunError("STATUS_SYNC_EVIDENCE", "Status-sync preflight returned no usable evidence");
   const parent = evidence.record;
-  const completionBasis = evidence.kind === "plan" ? "reviewed-current-state" : evidence.kind === "pending" ? "pending-retry" : evidence.kind === "synchronized" ? "synchronized-result" : "refused-evidence";
+  const completionBasis = evidence.kind === "plan"
+    ? "trusted-host-verification"
+    : evidence.kind === "pending"
+      ? parent.completionBasis || "pending-retry"
+      : evidence.kind === "synchronized"
+        ? parent.completionBasis || "synchronized-result"
+        : "refused-evidence";
   const runId = createRunId(now(), parent.taskHash);
   let record = initialLinkedRunRecord({
     runId,
@@ -306,6 +302,7 @@ async function runStatusSyncWorkflow(options) {
         outcome: "success",
         changedPaths: parent.changedPaths || [],
         verification: parent.verification || [],
+        hostChecks: parent.hostChecks || [],
         reviewReport: parent.reviewReport || null,
         derivedTarget: parent.derivedTarget || parent.statusSync.target,
         effectiveTarget: parent.effectiveTarget || parent.statusSync.target,
@@ -319,6 +316,7 @@ async function runStatusSyncWorkflow(options) {
         recordPath,
         completionBasis,
         verification: parent.verification || [],
+        hostChecks: parent.hostChecks || [],
         report: parent.reviewReport || null,
         derivedTarget: parent.derivedTarget || null,
         effectiveTarget: parent.effectiveTarget || null,
@@ -339,6 +337,7 @@ async function runStatusSyncWorkflow(options) {
         outcome: "success",
         changedPaths: parent.changedPaths || [],
         verification: parent.verification || [],
+        hostChecks: parent.hostChecks || [],
         reviewReport: parent.reviewReport || null,
         derivedTarget: parent.derivedTarget || parent.statusSync.target,
         effectiveTarget: parent.effectiveTarget || parent.statusSync.target,
@@ -352,6 +351,7 @@ async function runStatusSyncWorkflow(options) {
         recordPath,
         completionBasis,
         verification: parent.verification || [],
+        hostChecks: parent.hostChecks || [],
         report: parent.reviewReport || null,
         derivedTarget: parent.derivedTarget || parent.statusSync.target,
         effectiveTarget: parent.effectiveTarget || parent.statusSync.target,
@@ -377,7 +377,7 @@ async function runStatusSyncWorkflow(options) {
     io.phase("verification", "running strict OpenSpec and trusted path-selected checks");
     record = updateRunRecord(record, { phase: "verification", changedPaths: snapshot.paths }, now());
     recordPath = await recordWriter(context.root, record);
-    const checks = await collectChecksFn({
+    const checks = sanitizeHostChecks(await collectChecksFn({
       root: context.root,
       dependencyRoot: context.root,
       changeName,
@@ -385,52 +385,20 @@ async function runStatusSyncWorkflow(options) {
       baseSha: parent.baseSha,
       applyTestEnvironment: context.applyTestEnvironment,
       applyTestEnvironmentError: context.applyTestEnvironmentError,
-    });
-    const inventory = await collectInventoryFn({ root: context.root, changeName, checks });
+    }));
     const verification = checks.map((check) => `${check.label}: ${check.result}`);
 
-    io.phase("review", "evaluating issue acceptance criteria and approved OpenSpec requirements");
-    record = updateRunRecord(record, { phase: "review", verification }, now());
+    record = updateRunRecord(record, { phase: "verification", verification, hostChecks: checks }, now());
     recordPath = await recordWriter(context.root, record);
-    let reviewContext;
-    let report;
-    try {
-      reviewContext = await createReviewContextFn({
-        root: context.root,
-        runId,
-        issueTaskBody: context.issueTask.body,
-        checks,
-        baseSha: parent.baseSha,
-        changeName,
-      });
-      try {
-        const candidate = await reviewStageFn({
-          root: context.root,
-          worktree: context.root,
-          phase: "review",
-          changeName,
-          reviewContext,
-          reviewInventory: inventory,
-          baseSha: parent.baseSha,
-          signal,
-        });
-        report = validateReviewFn(candidate, inventory);
-      } catch (error) {
-        const localError = asLocalError(error);
-        report = validateReviewFn(blockedReviewReport(`${localError.code}: semantic review could not complete`, inventory), inventory);
-      }
-      report = sanitizeReviewReport(report);
-      await assertSnapshotFn(snapshot, snapshotOptions);
-      const currentIssue = await refreshIssueFn({ root: context.root, source: parent.source, signal });
-      const currentTask = createGitHubIssueTask(currentIssue);
-      if (currentTask.hash !== parent.taskHash || currentTask.changeName !== changeName) {
-        throw new LocalRunError("TASK_IDENTITY", "Linked GitHub issue changed during review");
-      }
-    } finally {
-      if (reviewContext) await cleanupReviewContextFn(reviewContext).catch((error) => io.error(`Cleanup warning: ${sanitizeText(error.message)}`));
+
+    await assertSnapshotFn(snapshot, snapshotOptions);
+    const currentIssue = await refreshIssueFn({ root: context.root, source: parent.source, signal });
+    const currentTask = createGitHubIssueTask(currentIssue);
+    if (currentTask.hash !== parent.taskHash || currentTask.changeName !== changeName) {
+      throw new LocalRunError("TASK_IDENTITY", "Linked GitHub issue changed during verification");
     }
 
-    const derivedTarget = deriveReviewTarget(report);
+    const derivedTarget = deriveHostCheckTarget(checks);
     const prepared = await prepareStatusFn({
       root: context.root,
       source: parent.source,
@@ -447,7 +415,8 @@ async function runStatusSyncWorkflow(options) {
       phase: "status-sync",
       changedPaths: snapshot.paths,
       verification,
-      reviewReport: report,
+      hostChecks: checks,
+      reviewReport: null,
       derivedTarget,
       effectiveTarget,
       fallbackReason,
@@ -457,14 +426,15 @@ async function runStatusSyncWorkflow(options) {
     const result = await updateStatusFn({ root: context.root, prepared, target: effectiveTarget, signal });
     record = updateRunRecord(record, { phase: "complete", outcome: "success", statusSync: { ...pending, state: "synchronized", value: result.status } }, now());
     recordPath = await recordWriter(context.root, record);
-    io.info(formatStatusSync({ changeName, status: result.status, recordPath, completionBasis, verification, report, derivedTarget, effectiveTarget, fallbackReason }));
+    io.info(formatStatusSync({ changeName, status: result.status, recordPath, completionBasis, verification, hostChecks: checks, derivedTarget, effectiveTarget, fallbackReason }));
     return {
       outcome: "success",
       mode: "sync-status",
       recordPath,
       paths: snapshot.paths,
       verification,
-      report,
+      hostChecks: checks,
+      report: null,
       derivedTarget,
       effectiveTarget,
       fallbackReason,

@@ -15,17 +15,20 @@ from app.db.base import Base
 from app import models  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", os.getenv("ALEMBIC_DATABASE_URL", settings.database_url))
+config.set_main_option(
+    "sqlalchemy.url",
+    os.getenv("ALEMBIC_DATABASE_URL", settings.database_url.get_secret_value()),
+)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.database_url,
+        url=settings.database_url.get_secret_value(),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

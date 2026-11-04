@@ -54,14 +54,21 @@ export function formatBlocked({ changeName, sourceLabel, summary, recordPath, pr
   ].join("\n");
 }
 
-export function formatStatusSync({ changeName, status, recordPath, completionBasis = null, verification = [], report = null, derivedTarget = null, effectiveTarget = null, fallbackReason = null }) {
+export function formatStatusSync({ changeName, status, recordPath, completionBasis = null, verification = [], hostChecks = [], report = null, derivedTarget = null, effectiveTarget = null, fallbackReason = null }) {
   return [
     `GitHub Project status synchronized: ${changeName} -> ${status}`,
     ...(completionBasis ? [`Completion basis: ${completionBasis}`] : []),
     ...(derivedTarget ? [`Derived status: ${derivedTarget}`] : []),
     ...(effectiveTarget && effectiveTarget !== derivedTarget ? [`Effective status: ${effectiveTarget}`] : []),
     ...(fallbackReason ? [`Status fallback: ${fallbackReason}`] : []),
-    ...(verification.length ? [`Verification: ${verification.join(", ")}`] : []),
+    ...(hostChecks.length ? [
+      "Authoritative trusted host checks:",
+      ...hostChecks.flatMap((check) => [
+        `  - [${check.result}] ${check.label}`,
+        ...(check.result === "PASS" ? [] : check.evidence.map((item) => `    Evidence: ${item}`)),
+        ...check.remainingWork.map((item) => `    Remaining: ${item}`),
+      ]),
+    ] : verification.length ? [`Verification: ${verification.join(", ")}`] : []),
     ...(report ? [
       `Review summary: ${report.summary}`,
       ...(report.humanReviewRequired ? ["Human review required:", ...report.humanReviewReasons.map((reason) => `  - ${reason}`)] : []),

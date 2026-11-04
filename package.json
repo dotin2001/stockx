@@ -22,6 +22,8 @@
     "web:dev": "npm run dev --workspace apps/web",
     "web:lint": "npm run lint --workspace apps/web",
     "web:build": "npm run build --workspace apps/web",
-    "web:typecheck": "npm run typecheck --workspace apps/web"
+    "web:typecheck": "npm run typecheck --workspace apps/web",
+    "api:lock:check": "uv lock --project apps/api --check",
+    "api:test:locked": "uv run --project apps/api --extra dev --frozen pytest"
   }
 }

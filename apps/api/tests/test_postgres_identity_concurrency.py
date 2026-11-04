@@ -9,7 +9,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import APIError
-from app.models import Category, Listing, Product, ProductVariant, User
+from app.models import AdministrativeAudit, Category, Listing, Product, ProductVariant, User
 from app.schemas.product import ProductVariantCreate, ProductVariantUpdate
 from app.services import admin_products, auth, listings
 from tests.postgres_support import create_postgres_test_engine
@@ -70,6 +70,7 @@ def postgres_identity_data():
         yield SessionLocal, ids
     finally:
         with SessionLocal() as db:
+            db.execute(delete(AdministrativeAudit).where(AdministrativeAudit.actor_user_id == ids["actor"]))
             db.execute(delete(Listing).where(Listing.product_id == ids["product"]))
             db.execute(delete(ProductVariant).where(ProductVariant.product_id == ids["product"]))
             db.execute(delete(Product).where(Product.id == ids["product"]))

@@ -11,6 +11,8 @@ class UserPublic(BaseModel):
     is_admin: bool
     is_supreme_admin: bool
     is_seller: bool
+    is_verified: bool
+    verified_at: datetime | None
     created_at: datetime
     updated_at: datetime
 

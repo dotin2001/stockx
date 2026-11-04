@@ -264,6 +264,34 @@ export function deriveReviewTarget(report) {
   return "done";
 }
 
+export function sanitizeHostChecks(checks, secrets = secretValues()) {
+  assertLocal(Array.isArray(checks) && checks.length > 0 && checks.length <= MAX_ENTRIES, "HOST_CHECKS", "Trusted host check results are empty or too large");
+  return Object.freeze(checks.map((check) => {
+    assertLocal(check?.source === "check", "HOST_CHECKS", "Trusted host check source is invalid");
+    assertLocal(typeof check.id === "string" && /^check:[a-z0-9][a-z0-9._:-]{0,119}$/.test(check.id), "HOST_CHECKS", "Trusted host check id is invalid");
+    assertLocal(typeof check.label === "string" && check.label.trim().length > 0 && check.label.length <= 500, "HOST_CHECKS", "Trusted host check label is invalid");
+    assertLocal(RESULT_VALUES.has(check.result), "HOST_CHECKS", "Trusted host check result is invalid");
+    const evidence = boundedStrings(check.evidence, "trusted host check evidence", { min: 1 });
+    const remainingWork = boundedStrings(check.remainingWork, "trusted host check remaining work", { min: check.result === "PASS" ? 0 : 1 });
+    assertLocal(check.result !== "PASS" || remainingWork.length === 0, "HOST_CHECKS", "Passing trusted host check cannot contain remaining work");
+    return Object.freeze({
+      source: "check",
+      id: check.id,
+      label: sanitizeText(check.label, secrets).slice(0, 500),
+      result: check.result,
+      evidence: Object.freeze(evidence.map((item) => sanitizeText(item, secrets).slice(0, 500))),
+      remainingWork: Object.freeze(remainingWork.map((item) => sanitizeText(item, secrets).slice(0, 500))),
+    });
+  }));
+}
+
+export function deriveHostCheckTarget(checks) {
+  const authoritative = sanitizeHostChecks(checks);
+  if (authoritative.some((check) => check.result === "FAIL")) return "review";
+  if (authoritative.some((check) => check.result === "BLOCKED")) return "blocked";
+  return "done";
+}
+
 export function sanitizeReviewReport(report, secrets = secretValues()) {
   return Object.freeze({
     version: 1,

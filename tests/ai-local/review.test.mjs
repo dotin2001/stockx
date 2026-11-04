@@ -13,7 +13,9 @@ import {
   collectReviewChecks,
   collectReviewSnapshot,
   createReviewContext,
+  deriveHostCheckTarget,
   deriveReviewTarget,
+  sanitizeHostChecks,
   validateReviewReport,
 } from "../../automation/ai-local/lib/review.mjs";
 import { git, initRepository } from "./support/helpers.mjs";
@@ -208,6 +210,36 @@ test("status derivation gives Review precedence over Blocked and human review", 
   report.humanReviewRequired = true;
   assert.equal(deriveReviewTarget(report), "review");
   assert.equal(deriveReviewTarget(blockedReviewReport("Codex unavailable", requiredInventory())), "blocked");
+});
+
+function hostCheck(id, result) {
+  return {
+    source: "check",
+    id: `check:${id}`,
+    label: id,
+    result,
+    evidence: [`${id} ${result.toLowerCase()}`],
+    remainingWork: result === "PASS" ? [] : [`Resolve ${id}`],
+  };
+}
+
+test("host-check status derivation is deterministic and rejects an empty authority set", () => {
+  assert.equal(deriveHostCheckTarget([hostCheck("one", "PASS"), hostCheck("two", "PASS")]), "done");
+  assert.equal(deriveHostCheckTarget([hostCheck("one", "PASS"), hostCheck("two", "FAIL")]), "review");
+  assert.equal(deriveHostCheckTarget([hostCheck("one", "PASS"), hostCheck("two", "BLOCKED")]), "blocked");
+  assert.equal(deriveHostCheckTarget([hostCheck("one", "BLOCKED"), hostCheck("two", "FAIL")]), "review");
+  assert.throws(() => deriveHostCheckTarget([]), (error) => error.code === "HOST_CHECKS");
+});
+
+test("trusted host checks are bounded and sanitized before persistence or output", () => {
+  const secret = "sentinel-secret";
+  const checks = sanitizeHostChecks([{
+    ...hostCheck("blocked", "BLOCKED"),
+    evidence: [`database ${secret} unavailable`],
+    remainingWork: [`restore ${secret}`],
+  }], [secret]);
+  assert.doesNotMatch(JSON.stringify(checks), /sentinel-secret/);
+  assert.match(JSON.stringify(checks), /\[REDACTED\]/);
 });
 
 test("review context is private, ephemeral, and removed without returning raw issue content", async () => {
