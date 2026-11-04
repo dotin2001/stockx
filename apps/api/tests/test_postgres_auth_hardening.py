@@ -28,7 +28,13 @@ def test_refresh_family_migration_backfills_chains_and_detaches_malformed_links(
     engine = create_postgres_test_engine()
     suffix = uuid4().hex
     first_user, second_user = uuid4(), uuid4()
-    independent, chain_first, chain_second, malformed = uuid4(), uuid4(), uuid4(), uuid4()
+    independent, chain_first, chain_second, malformed, self_linked = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
     command.downgrade(config, PREVIOUS_REVISION)
     try:
         with engine.begin() as connection:
@@ -49,6 +55,7 @@ def test_refresh_family_migration_backfills_chains_and_detaches_malformed_links(
                 (independent, first_user, f"independent-{suffix}"),
                 (chain_second, first_user, f"chain-second-{suffix}"),
                 (malformed, second_user, f"malformed-{suffix}"),
+                (self_linked, first_user, f"self-linked-{suffix}"),
             ):
                 connection.execute(
                     text(
@@ -75,6 +82,10 @@ def test_refresh_family_migration_backfills_chains_and_detaches_malformed_links(
                 text("UPDATE refresh_tokens SET replaced_by_token_id = :other WHERE id = :id"),
                 {"id": malformed, "other": independent},
             )
+            connection.execute(
+                text("UPDATE refresh_tokens SET replaced_by_token_id = :id WHERE id = :id"),
+                {"id": self_linked},
+            )
 
         command.upgrade(config, "head")
         with engine.connect() as connection:
@@ -83,13 +94,14 @@ def test_refresh_family_migration_backfills_chains_and_detaches_malformed_links(
                 for row in connection.execute(
                     text(
                         "SELECT id, family_id, replaced_by_token_id FROM refresh_tokens "
-                        "WHERE id IN (:independent, :chain_first, :chain_second, :malformed)"
+                        "WHERE id IN (:independent, :chain_first, :chain_second, :malformed, :self_linked)"
                     ),
                     {
                         "independent": independent,
                         "chain_first": chain_first,
                         "chain_second": chain_second,
                         "malformed": malformed,
+                        "self_linked": self_linked,
                     },
                 ).mappings()
             }
@@ -97,6 +109,28 @@ def test_refresh_family_migration_backfills_chains_and_detaches_malformed_links(
         assert rows[independent].family_id != rows[chain_first].family_id
         assert rows[malformed].family_id != rows[independent].family_id
         assert rows[malformed].replaced_by_token_id is None
+        assert rows[self_linked].replaced_by_token_id is None
+
+        first_assignment = {token_id: row.family_id for token_id, row in rows.items()}
+        command.downgrade(config, PREVIOUS_REVISION)
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            repeated_assignment = dict(
+                connection.execute(
+                    text(
+                        "SELECT id, family_id FROM refresh_tokens "
+                        "WHERE id IN (:independent, :chain_first, :chain_second, :malformed, :self_linked)"
+                    ),
+                    {
+                        "independent": independent,
+                        "chain_first": chain_first,
+                        "chain_second": chain_second,
+                        "malformed": malformed,
+                        "self_linked": self_linked,
+                    },
+                ).all()
+            )
+        assert repeated_assignment == first_assignment
     finally:
         command.upgrade(config, "head")
         with engine.begin() as connection:

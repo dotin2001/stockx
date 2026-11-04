@@ -220,6 +220,8 @@ class Settings(BaseSettings):
                     raise ValueError("CORS_ORIGINS must contain only non-local HTTPS origins in production")
             if self.auth_rate_limit_backend != RateLimitBackend.REDIS or self.auth_rate_limit_redis_url is None:
                 raise ValueError("AUTH_RATE_LIMIT_REDIS_URL and the redis backend are required in production")
+            if not self.auth_rate_limit_fail_closed:
+                raise ValueError("AUTH_RATE_LIMIT_FAIL_CLOSED must be enabled in production")
             if self.action_delivery_backend != ActionDeliveryBackend.WEBHOOK:
                 raise ValueError("ACTION_DELIVERY_BACKEND must select a production adapter")
 
