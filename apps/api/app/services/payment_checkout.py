@@ -21,7 +21,9 @@ from app.payments import (
 )
 from app.schemas.order import PaymentCancellationRead, PaymentSessionCreateRequest, PaymentSessionRead
 from app.services import orders
+from app.services.administrative_audit import write_audit
 from app.services.customer_lock import lock_customer_row
+from app.services.observability import emit_event
 
 
 @dataclass(slots=True)
@@ -36,6 +38,24 @@ class ReconciliationOutcome:
     attempt_id: str
     outcome: str
     detail: str | None = None
+
+
+def _emit_terminal_failure(
+    attempt: PaymentAttempt,
+    *,
+    previous_status: str,
+    source: str,
+) -> None:
+    if attempt.status not in {"failed", "expired", "cancelled"} or attempt.status == previous_status:
+        return
+    emit_event(
+        "payment_attempt_failed",
+        attempt_id=str(attempt.id),
+        previous_status=previous_status,
+        next_status=attempt.status,
+        source=source,
+        category=attempt.failure_code or "unknown_failure",
+    )
 
 
 def checkout_session_request(reservation: StripeReservation) -> CheckoutSessionRequest:
@@ -185,7 +205,12 @@ def reserve_stripe_checkout(
         expires_at=expires_at,
     )
     order.payment_attempts.append(attempt)
-    orders.reserve_inventory_and_clear_cart(db, checkout_context=checkout_context)
+    orders.reserve_inventory_and_clear_cart(
+        db,
+        checkout_context=checkout_context,
+        actor=user,
+        action="listing.inventory.checkout_reserved",
+    )
     db.add(order)
     db.flush()
     return StripeReservation(order=order, attempt=attempt, replay=False)
@@ -197,6 +222,7 @@ def compensate_provider_failure(
     attempt_id,
     failure_code: str = "provider_creation_failed",
     failure_message: str = "The payment provider could not create a checkout session.",
+    source: str = "checkout",
     now: datetime | None = None,
 ) -> StripeReservation:
     initial_attempt = db.get(PaymentAttempt, attempt_id)
@@ -227,6 +253,7 @@ def compensate_provider_failure(
     if order.inventory_released_at is not None:
         return StripeReservation(order=order, attempt=attempt, replay=True)
 
+    previous_status = attempt.status
     quantities_by_listing = {
         item.listing_id: item.quantity
         for item in order.items
@@ -258,7 +285,17 @@ def compensate_provider_failure(
     }
     for listing in locked_listings:
         quantity = quantities_by_listing[listing.id]
+        before_quantity = listing.available_quantity
         listing.available_quantity += quantity
+        write_audit(
+            db,
+            actor=order.user,
+            action="listing.inventory.checkout_released",
+            target_type="listing",
+            target_id=listing.id,
+            before={"available_quantity": before_quantity, "reserved_quantity": quantity},
+            after={"available_quantity": listing.available_quantity},
+        )
         cart_item = carts_by_listing.get(listing.id)
         if cart_item is None:
             db.add(CartItem(user_id=order.user_id, listing_id=listing.id, quantity=quantity))
@@ -274,6 +311,7 @@ def compensate_provider_failure(
     attempt.failure_message = failure_message[:255]
     attempt.hosted_url = None
     db.flush()
+    _emit_terminal_failure(attempt, previous_status=previous_status, source=source)
     return StripeReservation(order=order, attempt=attempt, replay=False)
 
 
@@ -443,6 +481,8 @@ def mark_payment_paid(
     )
     if order is None or attempt is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "payment_attempt_not_found", "Payment attempt was not found.")
+    if attempt.status == "paid" or order.payment_status == "paid":
+        return _cancellation_read(order, attempt)
     if order.inventory_released_at is not None or order.status == "cancelled":
         return _cancellation_read(order, attempt)
     if (
@@ -461,6 +501,21 @@ def mark_payment_paid(
     order.status = "confirmed"
     order.payment_status = "paid"
     order.confirmed_at = order.confirmed_at or completed_at
+    for item in order.items:
+        if item.listing_id is None:
+            continue
+        listing = db.get(Listing, item.listing_id)
+        if listing is None:
+            continue
+        write_audit(
+            db,
+            actor=order.user,
+            action="listing.inventory.sale_completed",
+            target_type="listing",
+            target_id=listing.id,
+            before={"available_quantity": listing.available_quantity, "reserved_quantity": item.quantity},
+            after={"available_quantity": listing.available_quantity},
+        )
     db.flush()
     return _cancellation_read(order, attempt)
 
@@ -471,6 +526,7 @@ def release_terminal_reservation(
     attempt_id,
     attempt_status: str,
     failure_code: str,
+    source: str = "payment_service",
     now: datetime | None = None,
 ) -> PaymentCancellationRead:
     initial_attempt = db.get(PaymentAttempt, attempt_id)
@@ -498,6 +554,7 @@ def release_terminal_reservation(
     if attempt.status == "paid" or order.payment_status == "paid" or order.inventory_released_at is not None:
         return _cancellation_read(order, attempt)
 
+    previous_status = attempt.status
     quantities_by_listing = {
         item.listing_id: item.quantity
         for item in order.items
@@ -513,7 +570,20 @@ def release_terminal_reservation(
         ).all()
     )
     for listing in locked_listings:
+        before_quantity = listing.available_quantity
         listing.available_quantity += quantities_by_listing[listing.id]
+        write_audit(
+            db,
+            actor=order.user,
+            action="listing.inventory.checkout_released",
+            target_type="listing",
+            target_id=listing.id,
+            before={
+                "available_quantity": before_quantity,
+                "reserved_quantity": quantities_by_listing[listing.id],
+            },
+            after={"available_quantity": listing.available_quantity},
+        )
 
     released_at = now or datetime.now(timezone.utc)
     attempt.status = attempt_status
@@ -523,6 +593,7 @@ def release_terminal_reservation(
     order.payment_status = "failed"
     order.inventory_released_at = released_at
     db.flush()
+    _emit_terminal_failure(attempt, previous_status=previous_status, source=source)
     return _cancellation_read(order, attempt)
 
 
@@ -554,6 +625,7 @@ def cancel_pending_payment(
             attempt_id=attempt.id,
             attempt_status="cancelled",
             failure_code="customer_cancelled",
+            source="customer_cancellation",
         )
         db.commit()
         return result
@@ -579,6 +651,7 @@ def cancel_pending_payment(
                     attempt_id=attempt_id,
                     attempt_status=terminal_status,
                     failure_code="session_expired" if terminal_status == "expired" else "customer_cancelled",
+                    source="customer_cancellation",
                 )
         db.commit()
         return result
@@ -662,7 +735,7 @@ def reconcile_payment_attempt(
                 if not exc.definitive:
                     db.rollback()
                     return ReconciliationOutcome(str(attempt.id), "provider_unavailable")
-                compensate_provider_failure(db, attempt_id=attempt.id)
+                compensate_provider_failure(db, attempt_id=attempt.id, source="reconciliation")
                 db.commit()
                 return ReconciliationOutcome(str(attempt.id), "compensated")
             attach_provider_session(db, attempt_id=attempt.id, provider_session=provider_session)
@@ -708,6 +781,7 @@ def reconcile_payment_attempt(
                 attempt_id=attempt.id,
                 attempt_status="expired",
                 failure_code="session_expired",
+                source="reconciliation",
                 now=current_time,
             )
             db.commit()

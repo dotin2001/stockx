@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextvars import ContextVar, Token
 import json
 import logging
 import re
@@ -13,14 +14,52 @@ from app.core.config import ErrorReporterBackend, settings
 
 REQUEST_ID_HEADER = "X-Request-ID"
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+EVENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+EVENT_FIELD_LIMITS = {
+    "request_id": 64,
+    "route": 128,
+    "method": 16,
+    "status": 32,
+    "duration_ms": None,
+    "error_code": 100,
+    "exception_type": 128,
+    "reason": 64,
+    "category": 100,
+    "stripe_event_id": 255,
+    "attempt_id": 64,
+    "previous_status": 32,
+    "next_status": 32,
+    "source": 64,
+    "examined": None,
+    "recovered": None,
+    "failed": None,
+    "still_stale": None,
+    "failed_webhooks": None,
+    "failed_attempts": None,
+    "stale_attempts": None,
+    "overdue_reservations": None,
+}
 logger = logging.getLogger("stockx.events")
 _report_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stockx-error-reporter")
+_request_id_context: ContextVar[str] = ContextVar("stockx_request_id", default="system")
 
 
 def accepted_request_id(value: str | None) -> str:
     if value and REQUEST_ID_PATTERN.fullmatch(value):
         return value
     return uuid4().hex
+
+
+def bind_request_id(request_id: str) -> Token[str]:
+    return _request_id_context.set(request_id)
+
+
+def reset_request_id(token: Token[str]) -> None:
+    _request_id_context.reset(token)
+
+
+def current_request_id() -> str:
+    return _request_id_context.get()
 
 
 def route_template(scope: dict[str, Any]) -> str:
@@ -38,10 +77,16 @@ def route_template(scope: dict[str, Any]) -> str:
 
 
 def emit_event(event: str, **fields: Any) -> None:
+    if not EVENT_NAME_PATTERN.fullmatch(event):
+        raise ValueError("event name must use bounded lowercase snake case")
     safe = {"event": event}
     for key, value in fields.items():
-        if value is None or isinstance(value, (str, int, float, bool)):
-            safe[key] = value[:256] if isinstance(value, str) else value
+        if key not in EVENT_FIELD_LIMITS or value is None:
+            continue
+        if isinstance(value, str):
+            safe[key] = value[: EVENT_FIELD_LIMITS[key]]
+        elif isinstance(value, (int, float, bool)):
+            safe[key] = value
     logger.info(json.dumps(safe, separators=(",", ":"), sort_keys=True))
 
 

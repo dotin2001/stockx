@@ -51,6 +51,21 @@ def create_listing(
     )
     db.add(listing)
     db.flush()
+    write_audit(
+        db,
+        actor=user,
+        action="listing.created",
+        target_type="listing",
+        target_id=listing.id,
+        before={},
+        after={
+            "available_quantity": listing.available_quantity,
+            "status": listing.status,
+            "price_cents": listing.price_cents,
+            "currency": listing.currency,
+            "product_variant_id": str(listing.product_variant_id) if listing.product_variant_id else None,
+        },
+    )
     return listing
 
 
@@ -95,6 +110,21 @@ def create_managed_listing(
     )
     db.add(listing)
     db.flush()
+    write_audit(
+        db,
+        actor=actor,
+        action="listing.created",
+        target_type="listing",
+        target_id=listing.id,
+        before={},
+        after={
+            "available_quantity": listing.available_quantity,
+            "status": listing.status,
+            "price_cents": listing.price_cents,
+            "currency": listing.currency,
+            "product_variant_id": str(listing.product_variant_id) if listing.product_variant_id else None,
+        },
+    )
     return _load_managed_listing(db, listing.id)
 
 
@@ -124,8 +154,18 @@ def cancel_user_listing(db: Session, *, user: User, listing_id: UUID) -> Listing
     )
     if listing is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "listing_not_found", "Listing was not found.")
+    before_status = listing.status
     listing.status = "cancelled"
     db.flush()
+    write_audit(
+        db,
+        actor=user,
+        action="listing.cancelled",
+        target_type="listing",
+        target_id=listing.id,
+        before={"status": before_status, "available_quantity": listing.available_quantity},
+        after={"status": listing.status, "available_quantity": listing.available_quantity},
+    )
     return listing
 
 
@@ -151,7 +191,7 @@ def list_managed_listings(
     return listings, total
 
 
-def cancel_managed_listing(db: Session, *, listing_id: UUID) -> Listing:
+def cancel_managed_listing(db: Session, *, listing_id: UUID, actor: User) -> Listing:
     listing = db.scalar(
         select(Listing)
         .where(Listing.id == listing_id)
@@ -160,8 +200,18 @@ def cancel_managed_listing(db: Session, *, listing_id: UUID) -> Listing:
     )
     if listing is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "listing_not_found", "Listing was not found.")
+    before_status = listing.status
     listing.status = "cancelled"
     db.flush()
+    write_audit(
+        db,
+        actor=actor,
+        action="listing.cancelled",
+        target_type="listing",
+        target_id=listing.id,
+        before={"status": before_status, "available_quantity": listing.available_quantity},
+        after={"status": listing.status, "available_quantity": listing.available_quantity},
+    )
     return listing
 
 

@@ -15,8 +15,10 @@ from app.db.session import get_db
 from app.services.observability import (
     REQUEST_ID_HEADER,
     accepted_request_id,
+    bind_request_id,
     emit_event,
     report_unexpected_error,
+    reset_request_id,
     route_template,
 )
 
@@ -39,6 +41,7 @@ if settings.cors_origins:
 async def request_context(request: Request, call_next):
     request_id = accepted_request_id(request.headers.get(REQUEST_ID_HEADER))
     request.state.request_id = request_id
+    context_token = bind_request_id(request_id)
     started = perf_counter()
     error_code = None
     try:
@@ -62,17 +65,20 @@ async def request_context(request: Request, call_next):
             exception_type=type(exc).__name__,
         )
         response = error_response(500, error_code, "An unexpected server error occurred.")
-    response.headers[REQUEST_ID_HEADER] = request_id
-    emit_event(
-        "request_completed",
-        request_id=request_id,
-        route=route_template(request.scope),
-        method=request.method,
-        status=response.status_code,
-        duration_ms=round((perf_counter() - started) * 1000, 3),
-        error_code=error_code or getattr(request.state, "error_code", None),
-    )
-    return response
+    try:
+        response.headers[REQUEST_ID_HEADER] = request_id
+        emit_event(
+            "request_completed",
+            request_id=request_id,
+            route=route_template(request.scope),
+            method=request.method,
+            status=response.status_code,
+            duration_ms=round((perf_counter() - started) * 1000, 3),
+            error_code=error_code or getattr(request.state, "error_code", None),
+        )
+        return response
+    finally:
+        reset_request_id(context_token)
 
 
 app.include_router(api_router, prefix="/api/v1")

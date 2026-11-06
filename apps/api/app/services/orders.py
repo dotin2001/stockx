@@ -23,6 +23,7 @@ from app.schemas.order import (
 )
 from app.services import checkout
 from app.services.customer_lock import lock_customer_row
+from app.services.administrative_audit import write_audit
 from app.services.order_identifiers import generate_order_number, normalized_request_hash
 
 
@@ -179,9 +180,28 @@ def build_order_from_checkout(
     return order
 
 
-def reserve_inventory_and_clear_cart(db: Session, *, checkout_context: LockedCheckout) -> None:
+def reserve_inventory_and_clear_cart(
+    db: Session,
+    *,
+    checkout_context: LockedCheckout,
+    actor: User,
+    action: str,
+) -> None:
     for item in checkout_context.cart_items:
+        before_quantity = item.listing.available_quantity
         item.listing.available_quantity -= item.quantity
+        write_audit(
+            db,
+            actor=actor,
+            action=action,
+            target_type="listing",
+            target_id=item.listing.id,
+            before={"available_quantity": before_quantity},
+            after={
+                "available_quantity": item.listing.available_quantity,
+                "reserved_quantity": item.quantity,
+            },
+        )
         db.delete(item)
 
 
@@ -239,7 +259,12 @@ def create_order(
         payment_status="unpaid",
         confirmed_at=datetime.now(timezone.utc),
     )
-    reserve_inventory_and_clear_cart(db, checkout_context=checkout_context)
+    reserve_inventory_and_clear_cart(
+        db,
+        checkout_context=checkout_context,
+        actor=user,
+        action="listing.inventory.manual_sale_reserved",
+    )
     db.add(order)
     db.flush()
     return serialize_order(order)

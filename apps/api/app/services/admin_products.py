@@ -23,6 +23,7 @@ from app.schemas.product import (
     ProductVariantUpdate,
 )
 from app.services.integrity import matches_integrity_target
+from app.services.administrative_audit import write_audit
 
 
 PRODUCT_LOAD_OPTIONS = (
@@ -35,6 +36,24 @@ SKU_UNIQUENESS_TARGETS = (
     "uq_product_variants_sku_normalized",
     "product_variants.sku",
 )
+
+
+def _product_facts(product: Product) -> dict:
+    return {
+        "name": product.name,
+        "slug": product.slug,
+        "brand": product.brand,
+        "category_id": str(product.category_id),
+        "archived": product.archived_at is not None,
+    }
+
+
+def _variant_facts(variant: ProductVariant) -> dict:
+    return {
+        "sku": variant.sku,
+        "size": variant.size,
+        "color": variant.color,
+    }
 
 
 def _product_slug_conflict() -> APIError:
@@ -164,7 +183,7 @@ def serialize_admin_product(product: Product) -> AdminProductRead:
     )
 
 
-def create_product(db: Session, payload: ProductCreate) -> Product:
+def create_product(db: Session, payload: ProductCreate, *, actor: User | None = None) -> Product:
     _ensure_category(db, payload.category_id)
     _ensure_unique_slug(db, payload.slug)
     product = Product(**payload.model_dump(exclude={"lowest_ask_cents"}))
@@ -176,14 +195,32 @@ def create_product(db: Session, payload: ProductCreate) -> Product:
         if matches_integrity_target(exc, PRODUCT_SLUG_TARGETS):
             raise _product_slug_conflict() from exc
         raise
-    return _load_product(db, product.id) or product
+    product = _load_product(db, product.id) or product
+    if actor is not None:
+        write_audit(
+            db,
+            actor=actor,
+            action="product.created",
+            target_type="product",
+            target_id=product.id,
+            before={},
+            after=_product_facts(product),
+        )
+    return product
 
 
-def update_product(db: Session, *, product_id: UUID, payload: ProductUpdate) -> Product:
+def update_product(
+    db: Session,
+    *,
+    product_id: UUID,
+    payload: ProductUpdate,
+    actor: User | None = None,
+) -> Product:
     product = _load_product(db, product_id)
     if product is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "product_not_found", "Product was not found.")
 
+    before = _product_facts(product)
     values = payload.model_dump(exclude_unset=True, exclude={"lowest_ask_cents"})
     category_id = values.get("category_id")
     if category_id is not None:
@@ -201,30 +238,70 @@ def update_product(db: Session, *, product_id: UUID, payload: ProductUpdate) -> 
         if matches_integrity_target(exc, PRODUCT_SLUG_TARGETS):
             raise _product_slug_conflict() from exc
         raise
-    return _load_product(db, product.id) or product
+    product = _load_product(db, product.id) or product
+    if actor is not None:
+        write_audit(
+            db,
+            actor=actor,
+            action="product.updated",
+            target_type="product",
+            target_id=product.id,
+            before=before,
+            after=_product_facts(product),
+        )
+    return product
 
 
 def archive_product(db: Session, *, product_id: UUID, admin: User) -> Product:
     product = _load_product(db, product_id)
     if product is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "product_not_found", "Product was not found.")
+    before = _product_facts(product)
     product.archived_at = datetime.now(UTC)
     product.archived_by_user_id = admin.id
     db.flush()
-    return _load_product(db, product.id) or product
+    product = _load_product(db, product.id) or product
+    write_audit(
+        db,
+        actor=admin,
+        action="product.archived",
+        target_type="product",
+        target_id=product.id,
+        before=before,
+        after=_product_facts(product),
+    )
+    return product
 
 
-def restore_product(db: Session, *, product_id: UUID) -> Product:
+def restore_product(db: Session, *, product_id: UUID, actor: User | None = None) -> Product:
     product = _load_product(db, product_id)
     if product is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "product_not_found", "Product was not found.")
+    before = _product_facts(product)
     product.archived_at = None
     product.archived_by_user_id = None
     db.flush()
-    return _load_product(db, product.id) or product
+    product = _load_product(db, product.id) or product
+    if actor is not None:
+        write_audit(
+            db,
+            actor=actor,
+            action="product.restored",
+            target_type="product",
+            target_id=product.id,
+            before=before,
+            after=_product_facts(product),
+        )
+    return product
 
 
-def create_variant(db: Session, *, product_id: UUID, payload: ProductVariantCreate) -> ProductVariant:
+def create_variant(
+    db: Session,
+    *,
+    product_id: UUID,
+    payload: ProductVariantCreate,
+    actor: User | None = None,
+) -> ProductVariant:
     product = _load_product(db, product_id)
     if product is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "product_not_found", "Product was not found.")
@@ -240,13 +317,30 @@ def create_variant(db: Session, *, product_id: UUID, payload: ProductVariantCrea
         if matches_integrity_target(exc, SKU_UNIQUENESS_TARGETS):
             raise _sku_conflict() from exc
         raise
+    if actor is not None:
+        write_audit(
+            db,
+            actor=actor,
+            action="product_variant.created",
+            target_type="product_variant",
+            target_id=variant.id,
+            before={},
+            after=_variant_facts(variant),
+        )
     return variant
 
 
-def update_variant(db: Session, *, variant_id: UUID, payload: ProductVariantUpdate) -> ProductVariant:
+def update_variant(
+    db: Session,
+    *,
+    variant_id: UUID,
+    payload: ProductVariantUpdate,
+    actor: User | None = None,
+) -> ProductVariant:
     variant = db.get(ProductVariant, variant_id)
     if variant is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "variant_not_found", "Product variant was not found.")
+    before = _variant_facts(variant)
     values = payload.model_dump(exclude_unset=True)
     if "sku" in values:
         values["sku"] = normalize_sku(values["sku"])
@@ -260,11 +354,31 @@ def update_variant(db: Session, *, variant_id: UUID, payload: ProductVariantUpda
         if matches_integrity_target(exc, SKU_UNIQUENESS_TARGETS):
             raise _sku_conflict() from exc
         raise
+    if actor is not None:
+        write_audit(
+            db,
+            actor=actor,
+            action="product_variant.updated",
+            target_type="product_variant",
+            target_id=variant.id,
+            before=before,
+            after=_variant_facts(variant),
+        )
     return variant
 
 
-def delete_variant(db: Session, *, variant_id: UUID) -> None:
+def delete_variant(db: Session, *, variant_id: UUID, actor: User | None = None) -> None:
     variant = db.get(ProductVariant, variant_id)
     if variant is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "variant_not_found", "Product variant was not found.")
+    if actor is not None:
+        write_audit(
+            db,
+            actor=actor,
+            action="product_variant.deleted",
+            target_type="product_variant",
+            target_id=variant.id,
+            before=_variant_facts(variant),
+            after={},
+        )
     db.delete(variant)

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import APIError
 from app.core.config import CheckoutMode, settings
-from app.models import CartItem, Category, Listing, Order, OrderItem, PaymentAttempt, Product, StripeWebhookEvent, User
+from app.models import AdministrativeAudit, CartItem, Category, Listing, Order, OrderItem, PaymentAttempt, Product, StripeWebhookEvent, User
 from app.payments import FakeCheckoutSessionProvider
 from app.schemas.order import OrderCreateRequest, PaymentSessionCreateRequest
 from app.services import checkout, orders, payment_checkout
@@ -65,6 +65,7 @@ def postgres_checkout_data():
     finally:
         settings.checkout_mode = previous_mode
         with SessionLocal() as db:
+            db.execute(delete(AdministrativeAudit).where(AdministrativeAudit.actor_user_id.in_(ids["users"])))
             db.execute(delete(OrderItem).where(OrderItem.order_id.in_(select(Order.id).where(Order.user_id.in_(ids["buyers"])))))
             db.execute(delete(Order).where(Order.user_id.in_(ids["buyers"])))
             db.execute(delete(CartItem).where(CartItem.user_id.in_(ids["buyers"])))

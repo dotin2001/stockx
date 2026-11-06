@@ -146,8 +146,8 @@ def get_customer_message(message_id: UUID, db: DbSession, _admin: CurrentAdminUs
 
 
 @router.post("/messages/{message_id}/read", response_model=CustomerMessageRead)
-def mark_customer_message_read(message_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> CustomerMessageRead:
-    message = customer_messages.mark_admin_message_read(db, message_id=message_id)
+def mark_customer_message_read(message_id: UUID, db: DbSession, admin: CurrentAdminUser) -> CustomerMessageRead:
+    message = customer_messages.mark_admin_message_read(db, message_id=message_id, actor=admin)
     db.commit()
     return customer_messages.serialize_message(message)
 
@@ -170,8 +170,8 @@ def list_listings(
 
 
 @router.post("/listings/{listing_id}/cancel", response_model=ListingManagementRead)
-def cancel_listing(listing_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> ListingManagementRead:
-    listing = listing_service.cancel_managed_listing(db, listing_id=listing_id)
+def cancel_listing(listing_id: UUID, db: DbSession, admin: CurrentAdminUser) -> ListingManagementRead:
+    listing = listing_service.cancel_managed_listing(db, listing_id=listing_id, actor=admin)
     db.commit()
     return ListingManagementRead.model_validate(listing)
 
@@ -194,8 +194,8 @@ def list_products(
 
 
 @router.post("/products", response_model=AdminProductRead, status_code=status.HTTP_201_CREATED)
-def create_product(payload: ProductCreate, db: DbSession, _admin: CurrentAdminUser) -> AdminProductRead:
-    product = admin_products.create_product(db, payload)
+def create_product(payload: ProductCreate, db: DbSession, admin: CurrentAdminUser) -> AdminProductRead:
+    product = admin_products.create_product(db, payload, actor=admin)
     db.commit()
     return admin_products.serialize_admin_product(product)
 
@@ -205,9 +205,9 @@ def update_product(
     product_id: UUID,
     payload: ProductUpdate,
     db: DbSession,
-    _admin: CurrentAdminUser,
+    admin: CurrentAdminUser,
 ) -> AdminProductRead:
-    product = admin_products.update_product(db, product_id=product_id, payload=payload)
+    product = admin_products.update_product(db, product_id=product_id, payload=payload, actor=admin)
     db.commit()
     return admin_products.serialize_admin_product(product)
 
@@ -220,8 +220,8 @@ def archive_product(product_id: UUID, db: DbSession, admin: CurrentAdminUser) ->
 
 
 @router.post("/products/{product_id}/restore", response_model=AdminProductRead)
-def restore_product(product_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> AdminProductRead:
-    product = admin_products.restore_product(db, product_id=product_id)
+def restore_product(product_id: UUID, db: DbSession, admin: CurrentAdminUser) -> AdminProductRead:
+    product = admin_products.restore_product(db, product_id=product_id, actor=admin)
     db.commit()
     return admin_products.serialize_admin_product(product)
 
@@ -313,9 +313,9 @@ def create_variant(
     product_id: UUID,
     payload: ProductVariantCreate,
     db: DbSession,
-    _admin: CurrentAdminUser,
+    admin: CurrentAdminUser,
 ) -> ProductVariantRead:
-    variant = admin_products.create_variant(db, product_id=product_id, payload=payload)
+    variant = admin_products.create_variant(db, product_id=product_id, payload=payload, actor=admin)
     db.commit()
     return ProductVariantRead.model_validate(variant)
 
@@ -325,16 +325,16 @@ def update_variant(
     variant_id: UUID,
     payload: ProductVariantUpdate,
     db: DbSession,
-    _admin: CurrentAdminUser,
+    admin: CurrentAdminUser,
 ) -> ProductVariantRead:
-    variant = admin_products.update_variant(db, variant_id=variant_id, payload=payload)
+    variant = admin_products.update_variant(db, variant_id=variant_id, payload=payload, actor=admin)
     db.commit()
     return ProductVariantRead.model_validate(variant)
 
 
 @router.delete("/product-variants/{variant_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_variant(variant_id: UUID, db: DbSession, _admin: CurrentAdminUser) -> None:
-    admin_products.delete_variant(db, variant_id=variant_id)
+def delete_variant(variant_id: UUID, db: DbSession, admin: CurrentAdminUser) -> None:
+    admin_products.delete_variant(db, variant_id=variant_id, actor=admin)
     db.commit()
     return None
 

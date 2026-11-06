@@ -301,6 +301,42 @@ digits, dot, underscore, or hyphen; invalid values are replaced. Structured logs
 use route templates and allowlisted fields and never include request bodies,
 cookies, credentials, action tokens, Stripe secrets, or webhook payloads.
 
+Configure the process liveness probe as `GET /health` and the dependency
+readiness probe as `GET /ready`. Liveness intentionally stays successful during
+a PostgreSQL outage; readiness executes a bounded `SELECT 1` using
+`DATABASE_CONNECT_TIMEOUT_SECONDS` and returns the stable
+`service_not_ready` code with HTTP 503 when PostgreSQL is unavailable. Do not
+use readiness failures to restart an otherwise-live process.
+
+Forward the `stockx.events` logger as one JSON object per record. Preserve the
+`X-Request-ID` response header at gateways and load balancers so callers can
+correlate sanitized API errors with `request_completed` and
+`application_error` events. `ERROR_REPORTER_BACKEND=disabled` is the safe
+default. To enable the isolated adapter, select `webhook`, provide an absolute
+HTTPS `ERROR_REPORTER_WEBHOOK_URL`, and keep
+`ERROR_REPORTER_TIMEOUT_SECONDS` at or below 2 seconds. Reporter rejection or
+timeout produces `error_reporter_failed` and never replaces the API response.
+
+### Payment and webhook alerts
+
+The following event/category pairs are the stable operator contract:
+
+| Event | Categories | Recommended action |
+| --- | --- | --- |
+| `payment_attempt_failed` | `provider_creation_failed`, `async_payment_failed` | Alert on any sustained increase; reconcile the attempt and provider state. |
+| `payment_attempt_failed` | `session_expired`, `customer_cancelled` | Track as workflow outcomes; alert only when expiry volume or rate is abnormal. |
+| `payment_webhook_failed` | `verification_failed` | Alert immediately for repeated failures; verify the endpoint secret and delivery source. |
+| `payment_webhook_failed` | `unknown_checkout_session`, `missing_order`, `missing_correlated_state` | Reconcile the provider event against local payment records. |
+| `payment_webhook_failed` | `missing_provider_object_id`, `session_id_mismatch`, `metadata_mismatch`, `amount_mismatch`, `currency_mismatch`, `livemode_mismatch`, `payment_intent_mismatch`, `ownership_mismatch`, `async_success_not_paid` | Alert immediately and quarantine automatic fulfillment pending reconciliation. |
+| `payment_webhook_failed` | `provider_retrieval_failed`, `processing_failed` | Retry reconciliation after provider/database recovery and inspect the durable webhook failure summary. |
+| `payment_attempt_transition` | none | Use for lifecycle tracing; alert only on impossible or stalled transition patterns. |
+
+Events contain only safe attempt/provider-event identifiers, stable states,
+sources, and categories. Customer details, provider URLs and secrets, raw
+payloads, and exception messages are excluded. Duplicate terminal webhook
+delivery is acknowledged from the durable ledger without repeating the payment
+transition or emitting a new false failure.
+
 ## Locked dependencies
 
 `pyproject.toml` declares direct dependencies and `uv.lock` pins production and

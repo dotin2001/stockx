@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.errors import APIError
 from app.core.config import Settings
 from app.core.security import hash_password, verify_password
-from app.models import Category, CustomerAdminMessage, Listing, Product, ProductVariant, RefreshToken, SellerProfile, User, WatchlistItem
+from app.models import AdministrativeAudit, Category, CustomerAdminMessage, Listing, Product, ProductVariant, RefreshToken, SellerProfile, User, WatchlistItem
 from app.schemas.admin_user import AdminUserRead
 from app.schemas.product import ProductCreate, ProductDiscoveryQuery, ProductDiscoverySort, ProductSummary
 from app.services import admin_users
@@ -776,6 +776,8 @@ def test_admin_product_management_flow(client: TestClient, db_session: Session) 
     assert restore.status_code == 200
     assert restore.json()["archived_at"] is None
     assert client.get("/api/v1/products/admin-updated-product").status_code == 200
+    actions = set(db_session.scalars(select(AdministrativeAudit.action)).all())
+    assert {"product.created", "product.updated", "product.archived", "product.restored"} <= actions
 
 
 def test_supreme_admin_user_management_api(client: TestClient, db_session: Session) -> None:
@@ -838,6 +840,8 @@ def test_supreme_admin_user_management_api(client: TestClient, db_session: Sessi
     db_session.refresh(supreme)
     assert supreme.is_admin is True
     assert supreme.is_supreme_admin is True
+    actions = set(db_session.scalars(select(AdministrativeAudit.action)).all())
+    assert {"user.admin.promoted", "user.admin.demoted"} <= actions
 
 
 def test_supreme_admin_role_flow(client: TestClient, db_session: Session) -> None:
@@ -996,6 +1000,8 @@ def test_admin_variant_management_flow(client: TestClient, db_session: Session) 
     assert deleted.status_code == 204
     detail_after_delete = client.get("/api/v1/products/jordan-1-retro-high-test")
     assert all(variant["id"] != variant_id for variant in detail_after_delete.json()["variants"])
+    actions = set(db_session.scalars(select(AdministrativeAudit.action)).all())
+    assert {"product_variant.created", "product_variant.updated", "product_variant.deleted"} <= actions
 
 
 def test_protected_listing_and_watchlist_flow(client: TestClient, db_session: Session) -> None:
@@ -1131,6 +1137,12 @@ def test_customer_admin_message_flow(client: TestClient, db_session: Session) ->
     )
     assert admin_cannot_send_customer_message.status_code == 403
     assert admin_cannot_send_customer_message.json()["error"]["code"] == "customer_required"
+    audit = db_session.scalar(
+        select(AdministrativeAudit).where(AdministrativeAudit.action == "customer_message.access_changed")
+    )
+    assert audit is not None
+    assert audit.target_id == UUID(message_id)
+    assert audit.facts == {"before": {"is_read": False}, "after": {"is_read": True}}
 
 
 def test_product_detail_exposes_lowest_active_listing(client: TestClient, db_session: Session) -> None:
@@ -1274,6 +1286,8 @@ def test_listing_management_and_archived_product_rejection(client: TestClient, d
     )
     assert archived_create.status_code == 409
     assert archived_create.json()["error"]["code"] == "product_archived"
+    actions = set(db_session.scalars(select(AdministrativeAudit.action)).all())
+    assert {"listing.created", "listing.cancelled"} <= actions
 
 
 def test_supreme_admin_inventory_service_rules(db_session: Session) -> None:
@@ -1641,6 +1655,13 @@ def test_supreme_admin_product_listing_creation_api(client: TestClient, db_sessi
         item["id"] == created_body["id"] and item["available_quantity"] == 4 and item["status"] == "active"
         for item in managed_product["inventory_items"]
     )
+    actions = set(db_session.scalars(select(AdministrativeAudit.action)).all())
+    assert {
+        "listing.created",
+        "listing.inventory.quantity_changed",
+        "listing.inventory.status_changed",
+        "listing.inventory.updated",
+    } <= actions
 
 
 def test_supreme_admin_inventory_management_api(client: TestClient, db_session: Session) -> None:

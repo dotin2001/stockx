@@ -7,16 +7,28 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import AdministrativeAudit, User
+from app.services.observability import current_request_id
 
 
 ALLOWED_FACT_KEYS = {
     "is_admin",
+    "is_read",
+    "archived",
     "available_quantity",
+    "reserved_quantity",
     "status",
     "price_cents",
     "currency",
+    "category_id",
     "product_variant_id",
+    "name",
+    "slug",
+    "brand",
+    "sku",
+    "size",
+    "color",
 }
+MAX_FACT_STRING_LENGTH = 256
 
 
 def write_audit(
@@ -26,19 +38,25 @@ def write_audit(
     action: str,
     target_type: str,
     target_id: UUID,
-    request_id: str,
+    request_id: str | None = None,
     before: dict | None = None,
     after: dict | None = None,
 ) -> AdministrativeAudit:
     def allow(values: dict | None) -> dict:
-        return {key: values[key] for key in sorted(values or {}) if key in ALLOWED_FACT_KEYS}
+        safe: dict[str, str | int | float | bool | None] = {}
+        for key in sorted(values or {}):
+            value = values[key]
+            if key not in ALLOWED_FACT_KEYS or value is not None and not isinstance(value, (str, int, float, bool)):
+                continue
+            safe[key] = value[:MAX_FACT_STRING_LENGTH] if isinstance(value, str) else value
+        return safe
 
     record = AdministrativeAudit(
         actor_user_id=actor.id,
         action=action[:80],
         target_type=target_type[:64],
         target_id=target_id,
-        request_id=(request_id or "unavailable")[:64],
+        request_id=(request_id or current_request_id())[:64],
         facts={"before": allow(before), "after": allow(after)},
     )
     db.add(record)

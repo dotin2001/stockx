@@ -8,7 +8,7 @@ from uuid import uuid4
 from alembic import command
 from alembic.config import Config
 from fastapi import Response
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, inspect, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.api.errors import APIError
@@ -19,6 +19,34 @@ from tests.postgres_support import create_postgres_test_engine, require_postgres
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "202610300001"
+
+
+def test_administrative_audit_migration_upgrades_downgrades_and_recreates_constraints(monkeypatch) -> None:
+    url = require_postgres_url()
+    monkeypatch.setenv("ALEMBIC_DATABASE_URL", url)
+    config = Config(str(ROOT / "alembic.ini"))
+    engine = create_postgres_test_engine()
+    try:
+        command.downgrade(config, PREVIOUS_REVISION)
+        assert "administrative_audits" not in inspect(engine).get_table_names()
+        command.upgrade(config, "head")
+        inspector = inspect(engine)
+        assert "administrative_audits" in inspector.get_table_names()
+        assert {
+            "ck_administrative_audits_action_not_blank",
+            "ck_administrative_audits_target_type_not_blank",
+            "ck_administrative_audits_request_id_not_blank",
+            "ck_administrative_audits_facts_bounded",
+        } <= {constraint["name"] for constraint in inspector.get_check_constraints("administrative_audits")}
+        assert {
+            "ix_administrative_audits_created_id",
+            "ix_administrative_audits_actor_created",
+            "ix_administrative_audits_action_created",
+            "ix_administrative_audits_target_created",
+        } <= {index["name"] for index in inspector.get_indexes("administrative_audits")}
+    finally:
+        command.upgrade(config, "head")
+        engine.dispose()
 
 
 def test_refresh_family_migration_backfills_chains_and_detaches_malformed_links(monkeypatch) -> None:

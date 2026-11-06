@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.errors import APIError
 from app.models import CustomerAdminMessage, User
 from app.schemas.customer_message import CustomerMessageCreate, CustomerMessageRead
+from app.services.administrative_audit import write_audit
 
 
 MESSAGE_LOAD_OPTIONS = (selectinload(CustomerAdminMessage.sender),)
@@ -96,10 +97,26 @@ def get_admin_message(db: Session, *, message_id: UUID) -> CustomerAdminMessage:
     return message
 
 
-def mark_admin_message_read(db: Session, *, message_id: UUID) -> CustomerAdminMessage:
+def mark_admin_message_read(
+    db: Session,
+    *,
+    message_id: UUID,
+    actor: User | None = None,
+) -> CustomerAdminMessage:
     message = get_admin_message(db, message_id=message_id)
     if not message.is_read:
+        before = message.is_read
         message.is_read = True
         message.read_at = datetime.now(UTC)
+        if actor is not None:
+            write_audit(
+                db,
+                actor=actor,
+                action="customer_message.access_changed",
+                target_type="customer_message",
+                target_id=message.id,
+                before={"is_read": before},
+                after={"is_read": message.is_read},
+            )
     db.flush()
     return get_admin_message(db, message_id=message.id)

@@ -86,6 +86,53 @@ def _fail_event(db: Session, record: StripeWebhookEvent, code: str) -> None:
     )
 
 
+def record_verification_failure(db: Session, *, payload: bytes, category: str) -> None:
+    digest = hashlib.sha256(payload).hexdigest()
+    event_id = f"unverified-{digest[:32]}"
+    existing = db.scalar(select(StripeWebhookEvent).where(StripeWebhookEvent.stripe_event_id == event_id))
+    if existing is not None and existing.processing_status == "failed":
+        db.rollback()
+        return
+    record = existing or StripeWebhookEvent(
+        stripe_event_id=event_id,
+        event_type="unverified",
+        provider_object_id=None,
+        livemode=False,
+        processing_status="received",
+        payload_digest=digest,
+    )
+    if existing is None:
+        db.add(record)
+    _fail_event(db, record, category)
+
+
+def _persist_processing_failure(
+    db: Session,
+    *,
+    event_id: str,
+    event_type: str,
+    provider_object_id: str | None,
+    livemode: bool,
+    digest: str,
+) -> None:
+    db.rollback()
+    existing = db.scalar(select(StripeWebhookEvent).where(StripeWebhookEvent.stripe_event_id == event_id))
+    if existing is not None and existing.processing_status in {"processed", "ignored", "failed"}:
+        db.rollback()
+        return
+    record = existing or StripeWebhookEvent(
+        stripe_event_id=event_id,
+        event_type=event_type,
+        provider_object_id=provider_object_id,
+        livemode=livemode,
+        processing_status="received",
+        payload_digest=digest,
+    )
+    if existing is None:
+        db.add(record)
+    _fail_event(db, record, "processing_failed")
+
+
 def _correlated_session(
     db: Session,
     *,
@@ -198,6 +245,7 @@ def _apply_event_transition(
                 attempt_id=attempt.id,
                 attempt_status="failed",
                 failure_code="async_payment_failed",
+                source="stripe_webhook",
             )
     elif event_type == "checkout.session.expired":
         if provider_session.payment_status == "paid":
@@ -208,6 +256,7 @@ def _apply_event_transition(
                 attempt_id=attempt.id,
                 attempt_status="expired",
                 failure_code="session_expired",
+                source="stripe_webhook",
             )
     record.processing_status = "processed"
     record.error_summary = None
@@ -271,8 +320,14 @@ def handle_verified_event(db: Session, *, event: dict[str, Any], payload: bytes)
             provider_session=provider_session,
         )
     except Exception:
-        db.rollback()
-        raise
+        _persist_processing_failure(
+            db,
+            event_id=event_id,
+            event_type=event_type,
+            provider_object_id=str(provider_object_id) if provider_object_id else None,
+            livemode=bool(event.get("livemode", False)),
+            digest=digest,
+        )
     return {"received": True}
 
 

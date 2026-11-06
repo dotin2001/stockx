@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
+import json
 from uuid import UUID
 
 import pytest
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.errors import APIError
 from app.api.deps import get_checkout_provider
 from app.core.config import CheckoutMode, settings
-from app.models import CartItem, Listing, Order, PaymentAttempt
+from app.models import AdministrativeAudit, CartItem, Listing, Order, PaymentAttempt
 from app.payments import FakeCheckoutSessionProvider, PaymentProviderError
 from app.reconcile_payments import main as reconcile_main
 from app.schemas.order import PaymentSessionCreateRequest
@@ -79,6 +80,16 @@ def test_local_stripe_reservation_creates_pending_order_attempt_and_reserves_inv
     assert db_session.get(CartItem, cart_item.id) is None
     assert db_session.scalar(select(func.count()).select_from(Order)) == 1
     assert db_session.scalar(select(func.count()).select_from(PaymentAttempt)) == 1
+    audit = db_session.scalar(
+        select(AdministrativeAudit).where(AdministrativeAudit.action == "listing.inventory.checkout_reserved")
+    )
+    assert audit is not None
+    assert audit.actor_user_id == buyer.id
+    assert audit.target_id == listing.id
+    assert audit.facts == {
+        "before": {"available_quantity": 5},
+        "after": {"available_quantity": 3, "reserved_quantity": 2},
+    }
 
 
 def test_stripe_reservation_rejects_stale_unavailable_and_mixed_currency(
@@ -222,7 +233,9 @@ def test_provider_session_is_server_derived_and_attached_after_reservation_commi
 def test_definitive_provider_failure_compensates_inventory_and_cart_once(
     client: TestClient,
     db_session: Session,
+    caplog,
 ) -> None:
+    caplog.set_level("INFO", logger="stockx.events")
     register(client, "stripe-compensate@example.com")
     buyer, listing, _cart_item = create_cart_listing(
         db_session,
@@ -251,6 +264,20 @@ def test_definitive_provider_failure_compensates_inventory_and_cart_once(
     assert compensated.order.payment_status == "failed"
     assert compensated.order.inventory_released_at is not None
     assert compensated.attempt.status == "failed"
+    events = [json.loads(record.getMessage()) for record in caplog.records if record.name == "stockx.events"]
+    assert any(
+        event["event"] == "payment_attempt_failed"
+        and event["category"] == "provider_creation_failed"
+        and event["source"] == "checkout"
+        and event["attempt_id"] == str(attempt_id)
+        for event in events
+    )
+    release_audit = db_session.scalar(
+        select(AdministrativeAudit).where(AdministrativeAudit.action == "listing.inventory.checkout_released")
+    )
+    assert release_audit is not None
+    assert release_audit.facts["before"]["available_quantity"] == 3
+    assert release_audit.facts["after"]["available_quantity"] == 5
 
     replay = payment_checkout.compensate_provider_failure(db_session, attempt_id=attempt_id)
     db_session.commit()

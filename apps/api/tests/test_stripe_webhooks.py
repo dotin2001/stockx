@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import CheckoutMode, settings
-from app.models import CartItem, Listing, Order, PaymentAttempt, StripeWebhookEvent
+from app.models import AdministrativeAudit, CartItem, Listing, Order, PaymentAttempt, StripeWebhookEvent
 from app.payments import FakeCheckoutSessionProvider
 from app.schemas.order import PaymentSessionCreateRequest
 from app.services import checkout, payment_checkout, stripe_webhooks
@@ -146,9 +146,14 @@ def test_webhook_rejects_missing_invalid_altered_stale_and_wrong_secret_signatur
             response = client.post("/api/v1/payments/stripe/webhook", content=body, headers=headers)
             assert response.status_code == 400
             assert response.json()["error"]["code"] == "invalid_stripe_signature"
-            assert db_session.scalar(select(func.count()).select_from(StripeWebhookEvent)) == 0
             assert db_session.scalar(select(func.count()).select_from(PaymentAttempt)) == 0
             assert db_session.scalar(select(func.count()).select_from(Order)) == 0
+        failures = list(db_session.scalars(select(StripeWebhookEvent)).all())
+        assert len(failures) == 2
+        assert {record.processing_status for record in failures} == {"failed"}
+        assert {record.error_summary for record in failures} == {"verification_failed"}
+        assert all(record.stripe_event_id.startswith("unverified-") for record in failures)
+        assert all(record.event_type == "unverified" for record in failures)
     finally:
         settings.stripe_webhook_secret = previous
 
@@ -340,12 +345,25 @@ def test_completed_and_async_success_transitions_are_monotonic_and_do_not_decrem
     assert order.status == "confirmed" and order.payment_status == "paid" and order.confirmed_at is not None
     assert order.inventory_released_at is None
     assert listing.available_quantity == 2
+    sale_audits = list(
+        db_session.scalars(
+            select(AdministrativeAudit).where(AdministrativeAudit.action == "listing.inventory.sale_completed")
+        ).all()
+    )
+    assert len(sale_audits) == 1
+    assert sale_audits[0].target_id == listing.id
+    assert sale_audits[0].facts == {
+        "before": {"available_quantity": 2, "reserved_quantity": 1},
+        "after": {"available_quantity": 2},
+    }
 
 
 def test_terminal_failure_and_expiry_release_inventory_once_and_never_override_paid(
     client: TestClient,
     db_session: Session,
+    caplog,
 ) -> None:
+    caplog.set_level("INFO", logger="stockx.events")
     buyer, listing, provider, started = start_local_payment(
         client,
         db_session,
@@ -372,6 +390,10 @@ def test_terminal_failure_and_expiry_release_inventory_once_and_never_override_p
     assert first_order is not None and first_order.status == "cancelled"
     assert first_order.inventory_released_at is not None
     assert listing.available_quantity == 4
+    events = [json.loads(record.getMessage()) for record in caplog.records if record.name == "stockx.events"]
+    failures = [event for event in events if event["event"] == "payment_attempt_failed"]
+    assert len([event for event in failures if event["category"] == "async_payment_failed"]) == 1
+    assert all("customer" not in event and "payload" not in event for event in failures)
 
     db_session.add(CartItem(user_id=buyer.id, listing_id=listing.id, quantity=1))
     db_session.commit()

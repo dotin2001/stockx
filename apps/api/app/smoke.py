@@ -130,6 +130,13 @@ def smoke_public_api(client: httpx.Client) -> str:
     health = request(client, "GET", "/health")
     assert_status(health, 200, "GET /health")
     assert_equal(response_json(health, "GET /health"), {"status": "ok"}, "Health payload mismatch.")
+    if not health.headers.get("X-Request-ID"):
+        fail("GET /health did not expose X-Request-ID.")
+
+    readiness = request(client, "GET", "/ready", headers={"X-Request-ID": "smoke-readiness"})
+    assert_status(readiness, 200, "GET /ready")
+    assert_equal(response_json(readiness, "GET /ready"), {"status": "ready"}, "Readiness payload mismatch.")
+    assert_equal(readiness.headers.get("X-Request-ID"), "smoke-readiness", "Readiness request ID mismatch.")
 
     categories_response = request(client, "GET", "/api/v1/categories")
     assert_status(categories_response, 200, "GET /api/v1/categories")
@@ -1160,6 +1167,32 @@ def smoke_admin_product_management(client: httpx.Client, product_id: str) -> str
         fail("Public product detail should include product stats.")
     if not isinstance(visible_detail_body.get("related_products"), list):
         fail("Public product detail should include related products.")
+
+    audits = request(
+        client,
+        "GET",
+        "/api/v1/admin/audits",
+        params={
+            "action": "listing.inventory.updated",
+            "target_type": "listing",
+            "target_id": active_listing_id,
+        },
+        headers=headers,
+    )
+    assert_status(audits, 200, "GET /api/v1/admin/audits")
+    audit_body = response_json(audits, "admin inventory audit")
+    if not isinstance(audit_body, dict) or audit_body.get("total") != 1:
+        fail("Admin inventory mutation did not produce one durable audit record.")
+    audit_items = audit_body.get("items")
+    if not isinstance(audit_items, list) or not audit_items:
+        fail("Admin inventory audit response did not include the durable record.")
+    audit = audit_items[0]
+    if not isinstance(audit, dict):
+        fail("Admin inventory audit record should be an object.")
+    assert_equal(audit.get("request_id"), inventory_update.headers.get("X-Request-ID"), "Inventory audit request ID mismatch.")
+    facts = audit.get("facts")
+    if not isinstance(facts, dict) or facts.get("after", {}).get("available_quantity") != 3:
+        fail("Admin inventory audit did not persist bounded after-quantity facts.")
 
     return active_listing_id
 

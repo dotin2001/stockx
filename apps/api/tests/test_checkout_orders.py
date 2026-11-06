@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import CheckoutMode, Settings, settings
 from app.core.security import hash_password
-from app.models import CartItem, Category, Listing, Order, OrderItem, PaymentAttempt, Product, ProductVariant, User
+from app.models import AdministrativeAudit, CartItem, Category, Listing, Order, OrderItem, PaymentAttempt, Product, ProductVariant, User
 from app.schemas.order import OrderCreateRequest, ShippingAddress
 from app.services import checkout, orders
 from app.services.order_identifiers import generate_order_number, normalized_request_hash
@@ -301,6 +301,17 @@ def test_order_creation_is_atomic_idempotent_and_customer_scoped(client: TestCli
     assert listing.available_quantity == 3
     assert db_session.get(CartItem, cart_item.id) is None
     assert db_session.scalar(select(func.count()).select_from(Order)) == 1
+    audit = db_session.scalar(
+        select(AdministrativeAudit).where(AdministrativeAudit.action == "listing.inventory.manual_sale_reserved")
+    )
+    assert audit is not None
+    assert audit.actor_user_id == buyer.id
+    assert audit.target_id == listing.id
+    assert audit.request_id == created.headers["X-Request-ID"]
+    assert audit.facts == {
+        "before": {"available_quantity": 5},
+        "after": {"available_quantity": 3, "reserved_quantity": 2},
+    }
 
     replay = client.post(
         "/api/v1/orders",
@@ -333,7 +344,7 @@ def test_order_creation_is_atomic_idempotent_and_customer_scoped(client: TestCli
 
 def test_disabled_and_stale_checkout_leave_cart_inventory_and_orders_unchanged(client: TestClient, db_session: Session) -> None:
     headers = register(client, "unchanged@example.com")
-    _buyer, listing, cart_item = create_cart_listing(db_session, buyer_email="unchanged@example.com", quantity=1)
+    buyer, listing, cart_item = create_cart_listing(db_session, buyer_email="unchanged@example.com", quantity=1)
     summary = client.get("/api/v1/checkout/summary", headers=headers).json()
 
     disabled = client.post(
@@ -358,6 +369,11 @@ def test_disabled_and_stale_checkout_leave_cart_inventory_and_orders_unchanged(c
     assert listing.available_quantity == 5
     assert db_session.get(CartItem, cart_item.id) is not None
     assert db_session.scalar(select(func.count()).select_from(Order)) == 0
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(AdministrativeAudit)
+        .where(AdministrativeAudit.actor_user_id == buyer.id)
+    ) == 0
 
 
 def test_order_snapshots_survive_live_catalog_and_account_changes(client: TestClient, db_session: Session) -> None:
@@ -414,6 +430,11 @@ def test_forced_persistence_failure_rolls_back_order_inventory_and_cart(
     assert listing.available_quantity == 5
     assert db_session.get(CartItem, cart_item.id) is not None
     assert db_session.scalar(select(func.count()).select_from(Order)) == 0
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(AdministrativeAudit)
+        .where(AdministrativeAudit.actor_user_id == buyer.id)
+    ) == 0
 
 
 def test_order_history_paginates_newest_first(client: TestClient, db_session: Session) -> None:
