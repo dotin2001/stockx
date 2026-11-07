@@ -228,6 +228,8 @@ export type UserPublic = {
   is_admin: boolean;
   is_supreme_admin: boolean;
   is_seller: boolean;
+  is_verified: boolean;
+  verified_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -268,6 +270,22 @@ export type RegisterPayload = {
 export type LoginPayload = {
   email: string;
   password: string;
+};
+
+export type AcceptedResponse = {
+  message: string;
+};
+
+export type EmailActionPayload = {
+  email: string;
+};
+
+export type ActionTokenPayload = {
+  token: string;
+};
+
+export type PasswordResetConfirmPayload = ActionTokenPayload & {
+  new_password: string;
 };
 
 export type ListingCreatePayload = {

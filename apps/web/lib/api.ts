@@ -1,5 +1,7 @@
 import type {
   ApiErrorEnvelope,
+  AcceptedResponse,
+  ActionTokenPayload,
   AdminOrderPage,
   AdminOrderQuery,
   AdminListingCreatePayload,
@@ -19,6 +21,7 @@ import type {
   CustomerMessageCreatePayload,
   CustomerMessagePage,
   CustomerMessageRead,
+  EmailActionPayload,
   GuestCartItemInput,
   GuestCartRead,
   ListingCreatePayload,
@@ -33,6 +36,7 @@ import type {
   OrderPage,
   PaymentCancellation,
   PaymentSession,
+  PasswordResetConfirmPayload,
   ProductDetail,
   ProductDiscoveryQueryParams,
   ProductPage,
@@ -46,6 +50,7 @@ import type {
   UUID,
   WatchlistItem
 } from "@/lib/types";
+import type { AuthSessionAdapter } from "@/lib/auth-session";
 
 const CONFIGURED_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 
@@ -66,14 +71,41 @@ export class ApiError extends Error {
   code: string;
   status: number;
   details?: unknown;
+  retryAfter: string | null;
+  retryAfterSeconds: number | null;
 
-  constructor(status: number, code: string, message: string, details?: unknown) {
+  constructor(status: number, code: string, message: string, details?: unknown, retryAfter: string | null = null) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
     this.details = details;
+    this.retryAfter = retryAfter;
+    this.retryAfterSeconds = parseRetryAfter(retryAfter);
   }
+
+  get kind() {
+    if (this.status === 403) return "access-denied" as const;
+    if (this.status === 429) return "rate-limited" as const;
+    if (this.code === "invalid_action_token") return "invalid-action-token" as const;
+    if (this.status === 422) return "validation" as const;
+    if (this.status === 401) return "unauthorized" as const;
+    return "api-error" as const;
+  }
+}
+
+function parseRetryAfter(value: string | null) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? null : Math.max(0, Math.ceil((date - Date.now()) / 1000));
+}
+
+let authSessionAdapter: AuthSessionAdapter | null = null;
+
+export function setAuthSessionAdapter(adapter: AuthSessionAdapter | null) {
+  authSessionAdapter = adapter;
 }
 
 type RequestOptions = {
@@ -83,17 +115,22 @@ type RequestOptions = {
   credentials?: RequestCredentials;
   cache?: RequestCache;
   headers?: Record<string, string>;
+  retried?: boolean;
 };
 
 async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const suppliedAccessToken = options.accessToken ?? null;
+  const authenticated = Boolean(suppliedAccessToken);
+  const session = authenticated ? authSessionAdapter?.snapshot() : null;
+  const accessToken = session?.accessToken ?? suppliedAccessToken;
   const headers = new Headers();
   headers.set("Accept", "application/json");
 
   if (options.body !== undefined) {
     headers.set("Content-Type", "application/json");
   }
-  if (options.accessToken) {
-    headers.set("Authorization", `Bearer ${options.accessToken}`);
+  if (accessToken) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
   }
   for (const [name, value] of Object.entries(options.headers ?? {})) {
     headers.set(name, value);
@@ -113,16 +150,46 @@ async function apiRequest<T>(path: string, options: RequestOptions = {}): Promis
 
   const json = (await response.json().catch(() => null)) as unknown;
   if (!response.ok) {
-    if (json && typeof json === "object" && "error" in json) {
-      const error = (json as Partial<ApiErrorEnvelope>).error;
-      throw new ApiError(
-        response.status,
-        error?.code ?? "api_error",
-        error?.message ?? "Request failed.",
-        error?.details
-      );
+    const retryAfter = response.headers.get("Retry-After");
+    const normalizedError = json && typeof json === "object" && "error" in json
+      ? (json as Partial<ApiErrorEnvelope>).error
+      : undefined;
+    const apiError = new ApiError(
+      response.status,
+      normalizedError?.code ?? "api_error",
+      normalizedError?.message ?? "Request failed.",
+      normalizedError?.details,
+      retryAfter
+    );
+
+    const canRefresh = response.status === 401
+      && authenticated
+      && Boolean(accessToken)
+      && !options.retried
+      && !path.startsWith("/api/v1/auth/")
+      && Boolean(authSessionAdapter)
+      && Boolean(session);
+
+    if (canRefresh && authSessionAdapter && session) {
+      let refreshed: AuthResponse | null;
+      try {
+        refreshed = await authSessionAdapter.refresh(session.generation);
+      } catch {
+        throw apiError;
+      }
+      if (refreshed) {
+        try {
+          return await apiRequest<T>(path, { ...options, accessToken: refreshed.access_token, retried: true });
+        } catch (retryError) {
+          if (retryError instanceof ApiError && retryError.status === 401) {
+            authSessionAdapter.terminate(authSessionAdapter.snapshot().generation);
+          }
+          throw retryError;
+        }
+      }
     }
-    throw new ApiError(response.status, "api_error", "Request failed.");
+
+    throw apiError;
   }
 
   return json as T;
@@ -204,6 +271,36 @@ export const api = {
   logout: () =>
     apiRequest<void>("/api/v1/auth/logout", {
       method: "POST",
+      credentials: "include"
+    }),
+  requestPasswordReset: (payload: EmailActionPayload) =>
+    apiRequest<AcceptedResponse>("/api/v1/auth/password-reset/request", {
+      method: "POST",
+      body: payload,
+      credentials: "include"
+    }),
+  confirmPasswordReset: (payload: PasswordResetConfirmPayload) =>
+    apiRequest<UserPublic>("/api/v1/auth/password-reset/confirm", {
+      method: "POST",
+      body: payload,
+      credentials: "include"
+    }),
+  requestVerification: (payload: EmailActionPayload) =>
+    apiRequest<AcceptedResponse>("/api/v1/auth/verification/request", {
+      method: "POST",
+      body: payload,
+      credentials: "include"
+    }),
+  confirmVerification: (payload: ActionTokenPayload) =>
+    apiRequest<UserPublic>("/api/v1/auth/verification/confirm", {
+      method: "POST",
+      body: payload,
+      credentials: "include"
+    }),
+  logoutAll: (accessToken: string) =>
+    apiRequest<void>("/api/v1/auth/logout-all", {
+      method: "POST",
+      accessToken,
       credentials: "include"
     }),
   listMyListings: (accessToken: string) =>

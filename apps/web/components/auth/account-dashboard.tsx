@@ -8,6 +8,7 @@ import { formatMoney } from "@/lib/format";
 import { consumeCartMergeNotice } from "@/lib/guest-cart";
 import type { Cart, CartItem, CustomerMessageRead, WatchlistItem } from "@/lib/types";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/states";
+import { AccountSecurityPanel } from "@/components/auth/account-security-panel";
 
 function cartWithItems(items: CartItem[]): Cart {
   return {
@@ -165,6 +166,7 @@ export function AccountDashboard() {
           <p className="mt-1">Use this space to manage your watchlist, cart, checkout state, and messages to the store team.</p>
         </div>
       </section>
+      <AccountSecurityPanel />
       {mergeNotice ? (
         <p className="border border-market-green/30 bg-market-mint px-3 py-2 text-sm font-semibold text-ink-800">{mergeNotice}</p>
       ) : null}

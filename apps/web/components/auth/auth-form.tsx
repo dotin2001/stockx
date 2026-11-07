@@ -5,6 +5,7 @@ import { FormEvent, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
 import { ApiError } from "@/lib/api";
+import { normalizeInternalReturnUrl, safeInternalReturnUrl } from "@/lib/return-url";
 
 type Mode = "login" | "signup";
 
@@ -34,8 +35,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
           password: String(form.get("password") ?? "")
         });
       }
-      const redirect = params.get("redirect");
-      router.push(redirect?.startsWith("/") ? redirect : "/account");
+      router.push(safeInternalReturnUrl(params.get("redirect")));
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Authentication failed.");
     } finally {
@@ -44,6 +44,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
   }
 
   const isSignup = mode === "signup";
+  const redirect = normalizeInternalReturnUrl(params.get("redirect"));
 
   return (
     <form onSubmit={submit} className="surface mx-auto grid w-full max-w-md gap-5 p-6">
@@ -71,9 +72,14 @@ export function AuthForm({ mode }: { mode: Mode }) {
       <button type="submit" disabled={submitting} className="bg-ink-900 px-5 py-3 text-sm font-bold text-white hover:bg-market-green disabled:cursor-not-allowed disabled:opacity-60">
         {submitting ? "Working..." : isSignup ? "Sign Up" : "Login"}
       </button>
+      {!isSignup ? (
+        <Link href="/forgot-password" className="text-sm font-bold text-ink-700 underline decoration-ink-300 underline-offset-4 hover:text-market-green">
+          Forgot your password?
+        </Link>
+      ) : null}
       <p className="text-sm text-ink-500">
         {isSignup ? "Already have an account? " : "Need an account? "}
-        <Link href={`${isSignup ? "/login" : "/signup"}${params.get("redirect") ? `?redirect=${encodeURIComponent(params.get("redirect") ?? "")}` : ""}`} className="font-bold text-ink-900 hover:text-market-green">
+        <Link href={`${isSignup ? "/login" : "/signup"}${redirect ? `?redirect=${encodeURIComponent(redirect)}` : ""}`} className="font-bold text-ink-900 hover:text-market-green">
           {isSignup ? "Log in" : "Sign up"}
         </Link>
       </p>
